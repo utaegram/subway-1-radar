@@ -35,65 +35,79 @@
   </header>
 
   <main>
-    <!-- 1행: 출발역 → 도착역 -->
-    <div class="top-row">
-      <button id="depBtn" class="station-pick" type="button" aria-haspopup="dialog" aria-label="출발역 선택">
-        <span class="sp-cap"><i class="sp-dot sp-dot-dep" aria-hidden="true"></i>출발</span>
-        <span class="sp-line">
-          <span class="sp-name" id="depName">두정</span>
-          <span class="sp-caret" aria-hidden="true">▼</span>
-        </span>
-      </button>
+    <!-- 1~3행: 1호선 전철 정면(지붕·행선표시기 / 앞유리창 / 하단 띠) -->
+    <div class="train-front">
+      <div class="tf-roof" aria-hidden="true"></div>
 
-      <button id="swapBtn" class="swap-btn" type="button" aria-label="출발역과 도착역 바꾸기" title="출발역과 도착역 바꾸기">⇄</button>
+      <!-- 1행: 출발역 → 도착역 (전면 행선표시기) -->
+      <div class="tf-sign">
+        <div class="top-row">
+          <button id="depBtn" class="station-pick" type="button" aria-haspopup="dialog" aria-label="출발역 선택">
+            <span class="sp-cap"><i class="sp-dot sp-dot-dep" aria-hidden="true"></i>출발</span>
+            <span class="sp-line">
+              <span class="sp-name" id="depName">두정</span>
+              <span class="sp-caret" aria-hidden="true">▼</span>
+            </span>
+          </button>
 
-      <button id="arrBtn" class="station-pick" type="button" aria-haspopup="dialog" aria-label="도착역 선택">
-        <span class="sp-cap"><i class="sp-dot sp-dot-arr" aria-hidden="true"></i>도착</span>
-        <span class="sp-line">
-          <span class="sp-name" id="arrName">아산</span>
-          <span class="sp-caret" aria-hidden="true">▼</span>
-        </span>
-      </button>
+          <button id="swapBtn" class="swap-btn" type="button" aria-label="출발역과 도착역 바꾸기" title="출발역과 도착역 바꾸기">⇄</button>
+
+          <button id="arrBtn" class="station-pick" type="button" aria-haspopup="dialog" aria-label="도착역 선택">
+            <span class="sp-cap"><i class="sp-dot sp-dot-arr" aria-hidden="true"></i>도착</span>
+            <span class="sp-line">
+              <span class="sp-name" id="arrName">아산</span>
+              <span class="sp-caret" aria-hidden="true">▼</span>
+            </span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 2행: 판정 카드 + 이동 시간 + 준비하기 (앞유리창) -->
+      <div class="tf-glass">
+        <section class="card verdict-card" id="verdictCard" aria-live="polite">
+          <div class="v-body" id="verdictBody">
+            <div class="verdict-skeleton">불러오는 중…</div>
+          </div>
+          <div class="walk-col">
+            <div class="walk-compact">
+              <span class="wc-label">이동 &#183; 역까지</span>
+              <div class="wc-row">
+                <button id="walkMinus" class="wc-btn" type="button" aria-label="이동 시간 1분 줄이기">−</button>
+                <span class="wc-val" aria-live="off"><b id="walkValue">10</b><i>분</i></span>
+                <button id="walkPlus" class="wc-btn" type="button" aria-label="이동 시간 1분 늘리기">+</button>
+              </div>
+            </div>
+            <button id="readyBtn" class="ready-btn" type="button" aria-pressed="false">
+              <span class="rb-ico" aria-hidden="true">🔔</span><span class="rb-txt">준비하기</span>
+            </button>
+            <button id="readyTest" class="ready-test hidden" type="button">미리듣기</button>
+          </div>
+          <p class="ready-hint hidden" id="readyHint">화면을 켜 두면 출발 시각에 벨소리가 울려요</p>
+        </section>
+      </div>
+
+      <!-- 3행: 열차 위치 (전면 하단 코발트 띠) -->
+      <section class="card track-card tf-skirt">
+        <span class="tf-lamp tf-lamp-l" aria-hidden="true"></span>
+        <span class="tf-lamp tf-lamp-r" aria-hidden="true"></span>
+        <span class="tf-coupler" aria-hidden="true"></span>
+        <div class="card-head">
+          <h2>열차 위치</h2>
+          <span class="track-caption" id="trackCaption">두정 → 아산</span>
+        </div>
+        <div class="track" id="track">
+          <div class="track-empty">열차 위치를 그리는 중…</div>
+        </div>
+        <div class="track-legend">
+          <span><i class="lg lg-here"></i>출발역</span>
+          <span><i class="lg lg-train"></i>열차</span>
+          <span><i class="lg lg-arrive"></i>도착·진입</span>
+          <span><i class="lg lg-exp"></i>급행</span>
+        </div>
+      </section>
     </div>
 
-    <!-- 2행: 판정 카드 + 이동 시간 + 준비하기 -->
-    <section class="card verdict-card" id="verdictCard" aria-live="polite">
-      <div class="v-body" id="verdictBody">
-        <div class="verdict-skeleton">불러오는 중…</div>
-      </div>
-      <div class="walk-col">
-        <div class="walk-compact">
-          <span class="wc-label">이동 &#183; 역까지</span>
-          <div class="wc-row">
-            <button id="walkMinus" class="wc-btn" type="button" aria-label="이동 시간 1분 줄이기">−</button>
-            <span class="wc-val" aria-live="off"><b id="walkValue">10</b><i>분</i></span>
-            <button id="walkPlus" class="wc-btn" type="button" aria-label="이동 시간 1분 늘리기">+</button>
-          </div>
-        </div>
-        <button id="readyBtn" class="ready-btn" type="button" aria-pressed="false">
-          <span class="rb-ico" aria-hidden="true">🔔</span><span class="rb-txt">준비하기</span>
-        </button>
-        <button id="readyTest" class="ready-test hidden" type="button">미리듣기</button>
-      </div>
-      <p class="ready-hint hidden" id="readyHint">화면을 켜 두면 출발 시각에 벨소리가 울려요</p>
-    </section>
-
-    <section class="card track-card">
-      <div class="card-head">
-        <h2>열차 위치</h2>
-        <span class="track-caption" id="trackCaption">두정 → 아산</span>
-      </div>
-      <div class="track" id="track">
-        <div class="track-empty">열차 위치를 그리는 중…</div>
-      </div>
-      <div class="track-legend">
-        <span><i class="lg lg-here"></i>출발역</span>
-        <span><i class="lg lg-train"></i>열차</span>
-        <span><i class="lg lg-arrive"></i>도착·진입</span>
-        <span><i class="lg lg-exp"></i>급행</span>
-      </div>
-    </section>
-
+    <!-- 다가오는 열차: 승강장 LED 전광판 -->
     <section class="train-section">
       <div class="card-head">
         <h2>다가오는 열차</h2>
