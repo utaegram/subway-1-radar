@@ -1,7 +1,7 @@
 /* 1호선 알리미 서비스 워커
    - 앱 껍데기(HTML/CSS/JS/아이콘)는 캐시에서 먼저 응답
    - 서울시 API·프록시 요청은 캐시하지 않고 그대로 네트워크로 보냄 */
-const CACHE = 'subway1-radar-v9';
+const CACHE = 'subway1-radar-v10';
 const SHELL = [
   './',
   './index.html',
@@ -9,11 +9,11 @@ const SHELL = [
   './app.js',
   './stations.js',
   './manifest.json',
-  './icons/icon-192.png',
-  './icons/icon-512.png',
-  './icons/maskable-512.png',
-  './icons/apple-touch-icon.png',
-  './icons/favicon-32.png'
+  './icons/icon-192-v2.png',
+  './icons/icon-512-v2.png',
+  './icons/maskable-512-v2.png',
+  './icons/apple-touch-icon-v2.png',
+  './icons/favicon-32-v2.png'
 ];
 
 self.addEventListener('install', (event) => {
