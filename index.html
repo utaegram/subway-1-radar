@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0052A4">
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1C74C9">
-<meta name="description" content="수도권 전철 1호선 상·하행 실시간 열차 위치와 집에서 나갈 시각을 알려 주는 앱">
+<meta name="description" content="수도권 전철 1호선 출발역·도착역을 고르면 지금 나갈 시각과 출발 벨소리까지 알려 주는 앱">
 <title>1호선 레이더</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
@@ -35,51 +35,59 @@
   </header>
 
   <main>
-    <!-- 1행: 기준역 + 상·하행 -->
+    <!-- 1행: 출발역 → 도착역 -->
     <div class="top-row">
-      <button id="stationBtn" class="station-pick" type="button" aria-haspopup="dialog" aria-label="기준역 선택">
-        <span class="sp-pin" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z" fill="currentColor"/></svg>
+      <button id="depBtn" class="station-pick" type="button" aria-haspopup="dialog" aria-label="출발역 선택">
+        <span class="sp-cap"><i class="sp-dot sp-dot-dep" aria-hidden="true"></i>출발</span>
+        <span class="sp-line">
+          <span class="sp-name" id="depName">두정</span>
+          <span class="sp-caret" aria-hidden="true">▼</span>
         </span>
-        <span class="sp-name" id="stationName">두정</span>
-        <span class="sp-caret" aria-hidden="true">▾</span>
       </button>
 
-      <nav class="dir-tabs" role="tablist" aria-label="상행 하행 선택">
-        <button class="dir-tab is-active" type="button" role="tab" data-dir="up" aria-selected="true">
-          <span class="dir-arrow">↑</span><span class="dir-label">상행</span>
-        </button>
-        <button class="dir-tab" type="button" role="tab" data-dir="down" aria-selected="false">
-          <span class="dir-arrow">↓</span><span class="dir-label">하행</span>
-        </button>
-      </nav>
+      <button id="swapBtn" class="swap-btn" type="button" aria-label="출발역과 도착역 바꾸기" title="출발역과 도착역 바꾸기">⇄</button>
+
+      <button id="arrBtn" class="station-pick" type="button" aria-haspopup="dialog" aria-label="도착역 선택">
+        <span class="sp-cap"><i class="sp-dot sp-dot-arr" aria-hidden="true"></i>도착</span>
+        <span class="sp-line">
+          <span class="sp-name" id="arrName">아산</span>
+          <span class="sp-caret" aria-hidden="true">▼</span>
+        </span>
+      </button>
     </div>
 
-    <!-- 2행: 판정 카드 + 이동 시간 컴팩트 컨트롤 -->
+    <!-- 2행: 판정 카드 + 이동 시간 + 준비하기 -->
     <section class="card verdict-card" id="verdictCard" aria-live="polite">
       <div class="v-body" id="verdictBody">
         <div class="verdict-skeleton">불러오는 중…</div>
       </div>
-      <div class="walk-compact">
-        <span class="wc-label">이동 &#183; 역까지</span>
-        <div class="wc-row">
-          <button id="walkMinus" class="wc-btn" type="button" aria-label="이동 시간 1분 줄이기">−</button>
-          <span class="wc-val" aria-live="off"><b id="walkValue">10</b><i>분</i></span>
-          <button id="walkPlus" class="wc-btn" type="button" aria-label="이동 시간 1분 늘리기">+</button>
+      <div class="walk-col">
+        <div class="walk-compact">
+          <span class="wc-label">이동 &#183; 역까지</span>
+          <div class="wc-row">
+            <button id="walkMinus" class="wc-btn" type="button" aria-label="이동 시간 1분 줄이기">−</button>
+            <span class="wc-val" aria-live="off"><b id="walkValue">10</b><i>분</i></span>
+            <button id="walkPlus" class="wc-btn" type="button" aria-label="이동 시간 1분 늘리기">+</button>
+          </div>
         </div>
+        <button id="readyBtn" class="ready-btn" type="button" aria-pressed="false">
+          <span class="rb-ico" aria-hidden="true">🔔</span><span class="rb-txt">준비하기</span>
+        </button>
+        <button id="readyTest" class="ready-test hidden" type="button">미리듣기</button>
       </div>
+      <p class="ready-hint hidden" id="readyHint">화면을 켜 두면 출발 시각에 벨소리가 울려요</p>
     </section>
 
     <section class="card track-card">
       <div class="card-head">
         <h2>열차 위치</h2>
-        <span class="track-caption" id="trackCaption">오른쪽 → 기준역 진입</span>
+        <span class="track-caption" id="trackCaption">두정 → 아산</span>
       </div>
       <div class="track" id="track">
         <div class="track-empty">열차 위치를 그리는 중…</div>
       </div>
       <div class="track-legend">
-        <span><i class="lg lg-here"></i>기준역</span>
+        <span><i class="lg lg-here"></i>출발역</span>
         <span><i class="lg lg-train"></i>열차</span>
         <span><i class="lg lg-arrive"></i>도착·진입</span>
         <span><i class="lg lg-exp"></i>급행</span>
@@ -92,6 +100,8 @@
         <span class="muted" id="trainCount"></span>
       </div>
       <div id="trainList" class="train-list"></div>
+      <p id="filterNote" class="filter-note hidden"></p>
+      <p id="expNote" class="filter-note hidden"></p>
       <div id="trainEmpty" class="card empty hidden"></div>
     </section>
 
@@ -105,7 +115,6 @@
           <strong>30초 자동 갱신</strong>
           <span id="countdown">대기 중</span>
         </div>
-        <button id="mirrorBtn" class="ghost-btn small" type="button" title="상·하행이 반대로 보이면 방향을 뒤집어요">⇄ 방향 반전</button>
       </div>
       <p class="status-meta" id="statusMeta">–</p>
       <p class="status-error hidden" id="statusError"></p>
@@ -118,16 +127,17 @@
   </main>
 </div>
 
-<!-- 기준역 선택 -->
+<!-- 출발역/도착역 선택 -->
 <div class="sheet-backdrop hidden" id="stationSheet">
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="stationSheetTitle">
     <div class="sheet-head">
-      <h2 id="stationSheetTitle">기준역 선택</h2>
+      <h2 id="stationSheetTitle">출발역 선택</h2>
       <button class="icon-btn" type="button" data-close="station" aria-label="닫기">✕</button>
     </div>
     <div class="sheet-scroll">
-      <input id="stationSearch" class="search" type="search" placeholder="역 이름 검색 (예: 수원, 천안)" autocomplete="off">
+      <input id="stationSearch" class="search" type="search" placeholder="역 이름 검색 (예: 두정, 아산)" autocomplete="off">
       <div id="stationList" class="station-list"></div>
+      <p class="fine" id="stationHint">‘천안아산’을 검색하면 1호선 아산역을 찾아 줘요.</p>
     </div>
   </div>
 </div>
@@ -140,6 +150,12 @@
       <button class="icon-btn" type="button" data-close="settings" aria-label="닫기">✕</button>
     </div>
     <div class="sheet-scroll">
+      <fieldset class="field-group">
+        <legend>출발 벨소리</legend>
+        <p class="fine-block">[🔔 준비하기]를 켜 두면 ‘지금 출발!’이 되는 순간 벨소리와 진동으로 알려 줘요. 브라우저가 백그라운드 소리를 막는 경우가 있어 화면을 켜 두는 게 가장 확실해요.</p>
+        <button id="bellTest" class="ghost-btn" type="button">🔔 벨소리 미리듣기</button>
+      </fieldset>
+
       <fieldset class="field-group">
         <legend>데이터 소스</legend>
         <label class="radio">
@@ -174,9 +190,19 @@
       </div>
       <p class="test-result" id="testResult"></p>
 
-      <p class="fine">데모 모드는 API 키가 없어도 상·하행 열차가 실제처럼 흐르는 화면을 보여 줍니다. 키나 프록시를 저장하면 바로 실데이터로 바뀌고, 실패하면 데모로 되돌아갑니다.</p>
+      <p class="fine">데모 모드는 API 키가 없어도 출발역 방향 열차가 실제처럼 흐르는 화면을 보여 줍니다. 키나 프록시를 저장하면 바로 실데이터로 바뀌고, 실패하면 데모로 되돌아갑니다.</p>
     </div>
   </div>
+</div>
+
+<!-- 출발 알람 배너 -->
+<div class="alarm-banner hidden" id="alarmBanner" role="alert">
+  <span class="ab-ico" aria-hidden="true">🔔</span>
+  <div class="ab-text">
+    <strong>지금 출발!</strong>
+    <span id="alarmSub"></span>
+  </div>
+  <button id="alarmStop" class="ab-stop" type="button">알람 끄기</button>
 </div>
 
 <div id="toast" class="toast hidden" role="status"></div>

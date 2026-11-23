@@ -1,5 +1,8 @@
 /* ============================================================
    1호선 레이더 · app.js
+   - 출발역 → 도착역을 고르면 노선 그래프(stations.js)로 진행 방향과
+     경로를 정하고, 그 종착역이 도착역까지 실제로 닿는 열차만 판정한다.
+     예) 두정 → 아산 : 천안행은 천안에서 끝나므로 제외, 신창행만 표시
    - 서울시 실시간 도착정보(OA-12764) / 열차 위치(OA-12601) 클라이언트
    - 코레일 구간(두정·천안 등)은 barvlDt가 비어 오므로
      arvlMsg2/arvlMsg3/실시간 위치를 역간 소요시간으로 환산해 도착 시각을 추정
@@ -9,7 +12,8 @@
   'use strict';
 
   var D = window.Subway1Data;
-  var LS_KEY = 'subway1.settings.v1';
+  var LS_KEY = 'subway1.settings.v2';
+  var LS_OLD = 'subway1.settings.v1';
   var API_BASE = 'http://swopenAPI.seoul.go.kr/api/subway';
   var REFRESH_SEC = 30;
   var BOARD_MARGIN = 1; // 분: 승강장 도착 후 최소 여유
@@ -19,42 +23,61 @@
     key: '',
     proxy: '',
     walk: 10,
-    station: '두정',
+    dep: '두정',
+    arr: '아산',
     auto: true,
-    dir: 'up',
-    flip: false
+    ready: false      // 준비하기(출발 벨소리) 켜 둔 상태
   };
 
   /* ── 상태 ──────────────────────────────────────────── */
   var S = {
     s: loadSettings(),
-    tab: 'up',
+    tab: 'down',
     data: { up: [], down: [] },
     meta: { mode: 'demo', fetchedAt: 0, error: '', lastTrainsAt: 0 },
     countdown: REFRESH_SEC,
     loading: false,
-    ticker: null,
-    lastVisible: Date.now()
+    ticker: null
   };
-  S.tab = S.s.dir === 'down' ? 'down' : 'up';
+  S.tab = D.dirToward(S.s.dep, S.s.arr) || 'down';
+
+  /* 출발 벨소리 상태 */
+  var ready = {
+    armed: false,
+    ringing: false,
+    latched: false,
+    timer: null,
+    ctx: null,
+    wake: null,
+    beats: 0
+  };
 
   var el = {};
+  var sheetTarget = 'dep';
 
   /* ── 저장소 ────────────────────────────────────────── */
   function loadSettings() {
-    var out = {};
-    for (var k in DEFAULTS) out[k] = DEFAULTS[k];
+    var out = {}, k, raw = null;
+    for (k in DEFAULTS) out[k] = DEFAULTS[k];
     try {
-      var raw = localStorage.getItem(LS_KEY);
-      if (raw) {
+      raw = localStorage.getItem(LS_KEY) || localStorage.getItem(LS_OLD);
+    } catch (e) { raw = null; }
+    if (raw) {
+      try {
         var parsed = JSON.parse(raw);
         for (var key in out) {
           if (parsed[key] !== undefined && parsed[key] !== null) out[key] = parsed[key];
         }
-      }
-    } catch (e) { /* 저장소를 못 쓰면 기본값 */ }
+        // v1(기준역 + 상·하행) 설정 이어받기
+        if (parsed.dep === undefined && parsed.station) out.dep = D.normalize(parsed.station);
+      } catch (e) { /* 저장소가 깨졌으면 기본값 */ }
+    }
     out.walk = Math.min(30, Math.max(1, parseInt(out.walk, 10) || 10));
-    if (!D.axisOf(out.station)) out.station = '두정';
+    if (!D.isStation(out.dep)) out.dep = '두정';
+    out.arr = D.normalize(out.arr);
+    if (!D.isStation(out.arr) || out.arr === out.dep) out.arr = out.dep === '아산' ? '두정' : '아산';
+    out.auto = out.auto !== false;
+    out.ready = !!out.ready;
     return out;
   }
 
@@ -83,8 +106,13 @@
     });
   }
 
+  function stationLabel(name) {
+    return /역$/.test(name) ? name : name + '역';
+  }
+
   function showToast(msg) {
     var t = el.toast;
+    if (!t) return;
     t.textContent = msg;
     t.classList.remove('hidden');
     clearTimeout(showToast._t);
@@ -97,6 +125,10 @@
     if (!m) return NaN;
     return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
   }
+
+  function routeDir() { return D.dirToward(S.s.dep, S.s.arr) || 'down'; }
+  function routeLabel() { return routeDir() === 'up' ? '상행' : '하행'; }
+  function routeArrow() { return routeDir() === 'up' ? '↑' : '↓'; }
 
   /* ── 도착 메시지 해석 ──────────────────────────────── */
   /* 예: "[2]번째 전역 (성환)", "3분 후 (천안)", "당역 도착", "전역 출발" */
@@ -142,7 +174,7 @@
   }
 
   /* ── 도착 정보 분석 ────────────────────────────────── */
-  function analyze(raw, ref, dir) {
+  function analyze(raw, ref, dir, arr) {
     var express = /급행|특급|ITX/i.test(raw.btrainSttus || '') || /급행/.test(raw.trainLineNm || '');
     var itx = /ITX/i.test(raw.btrainSttus || '') || /ITX/.test(raw.trainLineNm || '');
     var recptn = parseRecptn(raw.recptnDt);
@@ -183,8 +215,8 @@
       var st = p.station;
       var count = p.count;
       if (!st && count) {
-        var appr = D.approachStations(ref, dir, count + 1);
-        // count번째 전역의 역명을 노선 데이터에서 가져온다
+        // 메시지에 역명이 없으면 출발역으로 들어오는 쪽 역 목록에서 찾는다
+        var appr = D.incomingSide(ref, arr, count);
         st = appr[count - 1] || null;
       }
       if (st) {
@@ -213,7 +245,6 @@
       if (p2 && p2.station) { atStation = p2.station; away = p2.count || null; }
     }
 
-    // 4) 메시지로도 모르면 실시간 위치로 보정(호출부에서 posRaw 전달)
     return {
       raw: raw,
       dir: dir,
@@ -229,6 +260,7 @@
       msg3: msg3,
       dest: raw.bstatnNm || destFromLineNm(raw.trainLineNm),
       trainNo: raw.btrainNo || '',
+      reaches: null,
       baseAt: Date.now()
     };
   }
@@ -246,8 +278,31 @@
     return m ? m[1] : '';
   }
 
-  function applyPosition(train, pos, ref) {
+  /* 원시 도착정보 → 경로 기준으로 방향·도달 가능 여부를 붙인 열차 객체 */
+  function routeTrain(raw, dep, arr) {
+    var dest = D.normalize(raw.bstatnNm || destFromLineNm(raw.trainLineNm));
+    var fallback = dirOf(raw.updnLine) || routeDir();
+    var dir = D.dirToward(dep, dest) || fallback;
+    var t = analyze(raw, dep, dir, arr);
+    t.dest = dest;
+    t.reaches = D.reaches(dep, arr, dest);
+    return t;
+  }
+
+  function applyPosition(train, pos, ref, arr) {
     if (!pos || !pos.statnNm) return false;
+
+    // 종착역을 실시간 위치 정보에서 보완 (statnTnm = 열차 종착역)
+    if (!train.dest && pos.statnTnm) {
+      var td = D.normalize(pos.statnTnm);
+      if (td) {
+        train.dest = td;
+        var dd = D.dirToward(ref, td);
+        if (dd) train.dir = dd;
+        train.reaches = D.reaches(ref, arr, td);
+      }
+    }
+
     var st = D.normalize(pos.statnNm);
     var mins = stationMinutes(st, ref, train.express);
     if (mins == null) return false;
@@ -270,22 +325,47 @@
   }
 
   /* ── 데모 시뮬레이션 ───────────────────────────────── */
-  var DEMO_UP = ['연천', '소요산', '광운대', '청량리', '서울역', '영등포', '구로', '부평', '인천', '수원'];
-  var DEMO_DOWN = ['신창', '천안', '서동탄', '아산', '온양온천', '평택', '수원', '병점', '인천', '구로'];
+  var DEMO_OFFSETS = [3.2, 7.9, 13.4, 19.2, 25.1, 31.0];
 
-  function demoDests(ref, dir) {
-    var src = dir === 'up' ? DEMO_UP : DEMO_DOWN;
-    var sign = dir === 'up' ? 1 : -1;
-    var out = src.filter(function (n) { return D.directionBetween(ref, n) === sign; });
-    return out.length ? out.slice(0, 4) : [];
+  /* 데모 종착역 후보: 진행 방향이 같고, 도착역 전에 끝나는 역도 섞는다 */
+  function demoTrainDests(dep, arr, dir) {
+    var list = [];
+    D.stationList().forEach(function (s) {
+      if (s.name === dep) return;
+      if (D.dirToward(dep, s.name) !== dir) return;
+      var min = D.minutesBetween(dep, s.name);
+      if (min == null || min <= 0) return;
+      list.push({ name: s.name, min: min, ok: D.reaches(dep, arr, s.name) === true });
+    });
+    list.sort(function (a, b) { return a.min - b.min; });
+    return list;
   }
 
-  function demoPosition(ref, dir, etaMin) {
-    var appr = D.approachStations(ref, dir, 10);
+  function demoDests(dep, arr, dir) {
+    var list = demoTrainDests(dep, arr, dir);
+    if (!list.length) return [];
+    var before = list.filter(function (x) { return !x.ok; });
+    var after = list.filter(function (x) { return x.ok; });
+    var out = [];
+    function add(x) { if (x && out.length < 6) out.push(x.name); }
+    // 가까운 곳에서 끝나는 열차(필터 확인용)와 도착역까지 가는 열차를 섞는다
+    add(before[0]);
+    add(after[0]);
+    add(before[1]);
+    add(after[1]);
+    add(after[after.length - 1]);
+    add(after[2]);
+    if (!out.length) add(list[0]);
+    while (out.length < 6) out.push(out[out.length - 1] || list[0].name);
+    return out.slice(0, 6);
+  }
+
+  function demoPosition(dep, arr, etaMin) {
+    var appr = D.incomingSide(dep, arr, 10);
     if (!appr.length) return null;
     var nodes = [];
     var dist = 0;
-    var prev = ref;
+    var prev = dep;
     for (var i = 0; i < appr.length; i++) {
       var seg = D.minutesBetween(appr[i], prev);
       dist += (seg == null ? 2 : seg);
@@ -300,20 +380,21 @@
     return { nodes: nodes, k: k };
   }
 
-  function buildDemo(ref, dir) {
-    var dests = demoDests(ref, dir);
+  function buildDemo(dep, arr) {
+    var dir = routeDir();
+    var dests = demoDests(dep, arr, dir);
     if (!dests.length) return [];
     var nowSec = Date.now() / 1000;
     var period = 36 * 60;
-    var offsets = [3.2, 7.9, 13.4, 19.2, 25.1, 31.0];
     var hour = new Date().getHours();
     var out = [];
 
-    offsets.forEach(function (off, i) {
+    DEMO_OFFSETS.forEach(function (off, i) {
       var etaSec = ((off * 60 - nowSec) % period + period) % period;
       var etaMin = etaSec / 60;
       var dest = dests[i % dests.length];
-      var pos = demoPosition(ref, dir, etaMin);
+      var ddir = D.dirToward(dep, dest) || dir;
+      var pos = demoPosition(dep, arr, etaMin);
       var msg2 = '';
       var arvlCd = '99';
       var barvlDt = '';
@@ -335,16 +416,16 @@
 
       out.push({
         subwayId: '1001',
-        updnLine: dir === 'up' ? '0' : '1',
-        trainLineNm: dest + '행(' + (type === '일반' ? '일반' : type) + ') - ' + ref + '방면',
+        updnLine: ddir === 'up' ? '0' : '1',
+        trainLineNm: dest + '행(' + (type === '일반' ? '일반' : type) + ') - ' + dep + '방면',
         btrainSttus: type,
         barvlDt: barvlDt,
         btrainNo: String(4100 + i * 37),
         bstatnNm: dest,
         arvlCd: arvlCd,
         arvlMsg2: msg2,
-        arvlMsg3: etaMin < 1 ? '곧 도착' : Math.round(etaMin) + '분 후 (' + (pos ? pos.nodes[pos.k].name : ref) + ')',
-        lstcarAt: ((hour >= 22 || hour < 2) && i === offsets.length - 1) ? '1' : '0',
+        arvlMsg3: etaMin < 1 ? '곧 도착' : Math.round(etaMin) + '분 후 (' + (pos ? pos.nodes[pos.k].name : dep) + ')',
+        lstcarAt: ((hour >= 22 || hour < 2) && i === DEMO_OFFSETS.length - 1) ? '1' : '0',
         recptnDt: fmtStamp(new Date())
       });
     });
@@ -417,17 +498,21 @@
   }
 
   /* ── 데이터 갱신 ───────────────────────────────────── */
-  function refresh(reason) {
-    var ref = S.s.station;
+  function bucket(trains) {
+    var up = [], down = [];
+    trains.forEach(function (t) { (t.dir === 'up' ? up : down).push(t); });
+    return { up: sortByEta(up), down: sortByEta(down) };
+  }
+
+  function refresh() {
+    var dep = S.s.dep;
+    var arr = S.s.arr;
     S.countdown = REFRESH_SEC;
     S.loading = true;
     var mode = S.s.source;
 
     if (mode === 'demo' || (mode === 'key' && !S.s.key) || (mode === 'proxy' && !S.s.proxy)) {
-      var up = buildDemo(ref, 'up');
-      var down = buildDemo(ref, 'down');
-      S.data.up = sortByEta(up.map(function (r) { return analyze(r, ref, 'up'); }));
-      S.data.down = sortByEta(down.map(function (r) { return analyze(r, ref, 'down'); }));
+      S.data = bucket(buildDemo(dep, arr).map(function (r) { return routeTrain(r, dep, arr); }));
       S.meta = { mode: 'demo', fetchedAt: Date.now(), error: '', lastTrainsAt: Date.now() };
       S.loading = false;
       renderAll();
@@ -443,35 +528,26 @@
       return;
     }
 
-    fetchArrivals(ref).then(function (list) {
-      var up = [], down = [];
-      list.forEach(function (raw) {
-        var dir = dirOf(raw.updnLine) || 'down';
-        if (S.s.flip) dir = dir === 'up' ? 'down' : 'up';
-        var t = analyze(raw, ref, dir);
-        if (t.etaSec == null) t.etaSec = null;
-        (dir === 'up' ? up : down).push(t);
+    fetchArrivals(dep).then(function (list) {
+      var trains = list.map(function (raw) { return routeTrain(raw, dep, arr); });
+      var needPos = trains.some(function (t) {
+        return t.etaSec == null || t.source === 'msg' || !t.dest;
       });
-
-      var needPos = up.concat(down).some(function (t) { return t.etaSec == null || t.source === 'msg'; });
 
       var afterPos = needPos
         ? fetchPositions().then(function (positions) {
           if (!positions.length) return;
           var byNo = {};
           positions.forEach(function (p) { byNo[String(p.trainNo)] = p; });
-          up.concat(down).forEach(function (t) {
+          trains.forEach(function (t) {
             var p = byNo[String(t.trainNo)];
-            if (p && (t.etaSec == null || t.source === 'msg')) applyPosition(t, p, ref);
+            if (p) applyPosition(t, p, dep, arr);
           });
         })
         : Promise.resolve();
 
       return afterPos.then(function () {
-        up.sort(function (a, b) { return (a.etaSec == null ? 1e9 : a.etaSec) - (b.etaSec == null ? 1e9 : b.etaSec); });
-        down.sort(function (a, b) { return (a.etaSec == null ? 1e9 : a.etaSec) - (b.etaSec == null ? 1e9 : b.etaSec); });
-        S.data.up = up;
-        S.data.down = down;
+        S.data = bucket(trains);
         S.meta = { mode: 'live', fetchedAt: Date.now(), error: '', lastTrainsAt: Date.now() };
       });
     }).catch(function (err) {
@@ -481,8 +557,7 @@
       }
       S.meta.error = msg;
       if (!S.data.up.length && !S.data.down.length) {
-        S.data.up = sortByEta(buildDemo(ref, 'up').map(function (r) { return analyze(r, ref, 'up'); }));
-        S.data.down = sortByEta(buildDemo(ref, 'down').map(function (r) { return analyze(r, ref, 'down'); }));
+        S.data = bucket(buildDemo(dep, arr).map(function (r) { return routeTrain(r, dep, arr); }));
         S.meta.mode = 'demo';
       }
     }).then(function () {
@@ -495,6 +570,18 @@
     return list.sort(function (a, b) {
       return (a.etaSec == null ? 1e9 : a.etaSec) - (b.etaSec == null ? 1e9 : b.etaSec);
     });
+  }
+
+  /* ── 도착역까지 가는 열차만 ────────────────────────── */
+  function visibleRows() {
+    var all = S.data[S.tab] || [];
+    var kept = [];
+    var excluded = [];
+    all.forEach(function (t) {
+      if (t.reaches === false) { excluded.push(t.dest || '행선지 미상'); return; }
+      kept.push(t);
+    });
+    return { kept: kept, excluded: excluded.length, excludedDests: excluded, total: all.length };
   }
 
   /* ── 계산: 지금 나가야 할까? ───────────────────────── */
@@ -523,9 +610,16 @@
     });
   }
 
-  function verdictFor(rows, walk) {
+  function verdictFor(rows, walk, view) {
     rows = rows.filter(function (r) { return r.eta != null; });
     if (!rows.length) {
+      if (view && view.excluded) {
+        return {
+          kind: 'none',
+          title: S.s.arr + '까지 가는 열차가 없어요',
+          sub: '지금 오는 ' + view.excluded + '대는 ' + S.s.arr + ' 전에 종착해요 · 잠시 뒤 다시 확인해 주세요.'
+        };
+      }
       return {
         kind: 'none',
         title: '열차 정보가 없어요',
@@ -540,7 +634,7 @@
       var first = rows[0];
       var nearestMin = Math.round(first.etaMin);
       var needWalk = Math.max(1, Math.ceil(first.etaMin - 0.5));
-      var missSub = '이동 ' + walk + '분으로는 놓쳐요 · 가장 가까운 열차가 ' + nearestMin + '분 뒤 도착해요';
+      var missSub = '이동 ' + walk + '분으론 놓쳐요 · 다음 열차 ' + nearestMin + '분 뒤';
       if (needWalk >= 1 && needWalk < walk) {
         missSub += ' (이동 ' + needWalk + '분이면 탑승)';
       }
@@ -555,18 +649,18 @@
     }
     var dest = (best.t.dest || '열차');
     if (best.kind === 'go') {
-      var slackTxt = best.slack >= 0.5 ? '여유 ' + Math.round(best.slack) + '분' : '지금 나가면 딱 맞아요';
+      var slackTxt = best.slack >= 0.5 ? ' · 여유 ' + Math.round(best.slack) + '분' : '';
       return {
         kind: 'go',
         title: '지금 출발!',
-        sub: dest + '행이 ' + Math.round(best.etaMin) + '분 뒤 도착해요 · ' + slackTxt,
+        sub: dest + '행 ' + Math.round(best.etaMin) + '분 뒤 도착' + slackTxt,
         best: best
       };
     }
     return {
       kind: 'wait',
       title: best.departIn + '분 뒤 출발',
-      sub: '지금 나가면 ' + Math.round(best.slack - BOARD_MARGIN) + '분 더 기다려요 · ' + dest + '행',
+      sub: Math.max(0, Math.round(best.slack - BOARD_MARGIN)) + '분 대기 · ' + dest + '행',
       best: best
     };
   }
@@ -574,16 +668,16 @@
   /* ── 렌더 ──────────────────────────────────────────── */
   function renderAll() {
     renderStation();
-    renderTabs();
     renderLive();
   }
 
   function renderStation() {
-    var ref = S.s.station;
-    el.stationName.textContent = ref;
+    el.depName.textContent = S.s.dep;
+    el.arrName.textContent = S.s.arr;
     el.walkValue.textContent = S.s.walk;
     syncWalkButtons();
     el.autoToggle.checked = !!S.s.auto;
+    renderReady();
   }
 
   function syncWalkButtons() {
@@ -591,33 +685,21 @@
     el.walkPlus.disabled = S.s.walk >= 30;
   }
 
-  function renderTabs() {
-    var meta = D.directionMeta(S.s.station);
-    Array.prototype.forEach.call(document.querySelectorAll('.dir-tab'), function (btn) {
-      var dir = btn.getAttribute('data-dir');
-      var active = dir === S.tab;
-      btn.classList.toggle('is-active', active);
-      btn.setAttribute('aria-selected', active ? 'true' : 'false');
-      btn.setAttribute('aria-label', meta[dir].label + ' ' + meta[dir].hint);
-      btn.querySelector('.dir-label').textContent = meta[dir].label;
-      var hint = btn.querySelector('.dir-hint');
-      if (hint) hint.textContent = meta[dir].hint;
-      btn.querySelector('.dir-arrow').textContent = meta[dir].arrow;
-    });
-  }
-
   function renderLive() {
     var now = Date.now();
-    var rows = judgeTrains(S.data[S.tab] || [], S.s.walk, now);
-    var v = verdictFor(rows, S.s.walk);
+    var view = visibleRows();
+    var rows = judgeTrains(view.kept, S.s.walk, now);
+    var v = verdictFor(rows, S.s.walk, view);
+
     renderVerdict(v, now);
-    renderTrack(rows, now);
-    renderTrainList(rows, now);
-    renderStatus(now, rows);
+    renderTrack(rows);
+    renderTrainList(rows, view);
+    renderStatus(now);
+    renderReady();
+    maybeAlarm(v);
 
     if (S.s.auto) {
-      var left = Math.max(0, S.countdown);
-      el.countdown.textContent = left + '초 뒤 갱신';
+      el.countdown.textContent = Math.max(0, S.countdown) + '초 뒤 갱신';
     } else {
       el.countdown.textContent = '자동 갱신 꺼짐';
     }
@@ -627,11 +709,14 @@
   }
 
   function renderVerdict(v, now) {
-    var meta = D.directionMeta(S.s.station);
     var walk = S.s.walk;
+    var stops = D.stopsBetween(S.s.dep, S.s.arr);
+    var mins = D.minutesBetween(S.s.dep, S.s.arr);
     var html = '';
-    html += '<div class="v-top"><span class="v-kicker">' + esc(S.s.station) + '역 · ' +
-      esc(meta[S.tab].label) + ' ' + esc(meta[S.tab].hint) + '</span><span>' + clock(now) + '</span></div>';
+
+    html += '<div class="v-top"><span class="v-kicker">' + esc(S.s.dep) + ' → ' + esc(S.s.arr) +
+      (stops ? ' · ' + stops + '정거장' : '') + ' · ' + routeLabel() + routeArrow() +
+      '</span><span class="v-clock">' + clock(now) + '</span></div>';
 
     var icon = v.kind === 'go' ? '🏃' : v.kind === 'wait' ? '⏳' : v.kind === 'miss' ? '😵‍💫' : '🚉';
     html += '<div class="v-main"><div class="v-icon" aria-hidden="true">' + icon + '</div>' +
@@ -651,6 +736,9 @@
       html += '<span class="v-chip">도착<b>' +
         (arriveAt ? clock(arriveAt) + ' · ' + Math.max(0, Math.round((arriveAt - now) / 60000)) + '분 후' : '–') + '</b></span>';
     }
+    if (mins != null && mins > 0) {
+      html += '<span class="v-chip">' + esc(S.s.arr) + '까지<b>' + mins + '분</b></span>';
+    }
     if (v.best) {
       if (v.best.t.express) html += '<span class="pill pill-exp">급행</span>';
       if (v.best.t.lastTrain) html += '<span class="pill pill-last">막차</span>';
@@ -661,27 +749,29 @@
     el.verdictBody.innerHTML = html;
   }
 
-  function renderTrack(rows, now) {
-    var ref = S.s.station;
-    var dir = S.tab;
-    var appr = D.approachStations(ref, dir, 4);
-    var dep = D.departureStations(ref, dir, 2);
+  function renderTrack(rows) {
+    var dep = S.s.dep;
+    var arr = S.s.arr;
+    var incoming = D.incomingSide(dep, arr, 3);
+    var ahead = D.routeAhead(dep, arr, 2);
 
-    if (!appr.length && !dep.length) {
-      el.track.innerHTML = '<div class="track-empty">이 방향 열차가 없는 종점이에요</div>';
+    el.trackCaption.textContent = dep + ' → ' + arr + ' · ' + routeLabel() + ' ' + routeArrow();
+
+    if (!incoming.length && !ahead.length) {
+      el.track.innerHTML = '<div class="track-empty">이 구간 열차 위치를 그릴 수 없어요</div>';
       return;
     }
 
-    var nodes = [{ name: ref, pos: 0, here: true }];
-    var p = 0, prev = ref;
-    appr.forEach(function (n) {
+    var nodes = [{ name: dep, pos: 0, here: true }];
+    var p = 0, prev = dep;
+    incoming.forEach(function (n) {
       var seg = D.minutesBetween(n, prev);
       p -= (seg == null ? 2 : seg);
       nodes.push({ name: n, pos: p });
       prev = n;
     });
-    var q = 0, pv = ref;
-    dep.forEach(function (n) {
+    var q = 0, pv = dep;
+    ahead.forEach(function (n) {
       var seg = D.minutesBetween(pv, n);
       q += (seg == null ? 2 : seg);
       nodes.push({ name: n, pos: q });
@@ -698,32 +788,58 @@
 
     var html = '<div class="track-rail"></div>';
 
+    // 라벨이 겹치는 역은 이름을 숨기고 점만 남긴다(출발역은 항상 표시)
+    var W = el.track.clientWidth || 360;
+    var estPct = function (n) {
+      return ((n.name.length * 10.5) + ((n.here || n.name === arr) ? 20 : 0)) * 100 / W;
+    };
+    var spans = [];
+    nodes.forEach(function (n) {
+      if (!n.here) return;
+      var x = xOf(n.pos), h = estPct(n) / 2;
+      spans.push({ l: x - h, r: x + h });
+    });
+    nodes.forEach(function (n) {
+      if (n.here) return;
+      var x = xOf(n.pos), h = estPct(n) / 2;
+      var clash = spans.some(function (s) { return (x - h) < (s.r + 0.8) && (x + h) > (s.l - 0.8); });
+      if (clash) n.tight = true;
+      else spans.push({ l: x - h, r: x + h });
+    });
+
     nodes.forEach(function (n) {
       var isHere = !!n.here;
-      html += '<div class="t-node' + (isHere ? ' is-here' : '') + '" style="left:' + xOf(n.pos).toFixed(2) + '%">' +
+      var isDest = n.name === arr;
+      html += '<div class="t-node' + (isHere ? ' is-here' : '') + (isDest ? ' is-dest' : '') +
+        (n.tight ? ' no-label' : '') + '" style="left:' + xOf(n.pos).toFixed(2) + '%">' +
         '<span class="t-dot"></span>' +
         '<span class="t-name">' + esc(n.name) + '</span>' +
-        (isHere ? '<span class="t-sub">기준역</span>' : '') +
+        (isHere ? '<span class="t-sub">출발역</span>' : isDest ? '<span class="t-sub">도착역</span>' : '') +
         '</div>';
     });
 
-    // 열차 마커: 남은 시간 → 기준역에서 떨어진 분 (보이는 구간 밖 열차는 목록에서 확인)
+    // 열차 마커: 남은 시간 → 출발역에서 떨어진 분. 화면 밖 먼 열차는 왼쪽에 점선으로
     var lanes = [10, 30];
     var placed = [];
+    var windowMin = Math.abs(minPos);
     rows.forEach(function (r) {
       if (r.eta == null) return;
       if (r.eta > 60 * 120) return;
-      var windowMin = Math.abs(minPos);
-      if (r.eta / 60 > windowMin) return;
-      var pos = -Math.min(r.eta / 60, windowMin);
-      var x = xOf(pos);
-      var lane = 0;
-      for (var i = 0; i < placed.length; i++) {
-        if (Math.abs(placed[i] - x) < 13) { lane = 1; break; }
+      var outside = windowMin < 0.5 || r.eta / 60 > windowMin;
+      var x = outside ? 5.5 : xOf(-Math.min(r.eta / 60, windowMin));
+      var lane = -1;
+      // 화면 밖 열차는 노선 위가 아니라 위쪽 여백에만 놓는다
+      var order = outside ? [0] : [0, 1];
+      for (var k = 0; k < order.length; k++) {
+        var i = order[k];
+        var busy = placed.some(function (p) { return p.lane === i && Math.abs(p.x - x) < 9; });
+        if (!busy) { lane = i; break; }
       }
-      placed.push(x);
+      if (lane < 0) return;
+      placed.push({ x: x, lane: lane });
       var minTxt = r.eta < 45 ? '곧' : Math.round(r.eta / 60) + '분';
-      var cls = 't-train ' + (lane ? 'lane-b' : 'lane-a') + (r.t.express ? ' is-exp' : '') + (r.kind === 'miss' ? ' is-late' : '') +
+      var cls = 't-train ' + (lane ? 'lane-b' : 'lane-a') + (outside ? ' is-outside' : '') +
+        (r.t.express ? ' is-exp' : '') + (r.kind === 'miss' ? ' is-late' : '') +
         (r.eta < 30 ? ' is-ref' : '');
       html += '<div class="' + cls + '" style="left:' + x.toFixed(2) + '%;top:' + lanes[lane] + 'px">' +
         '<span class="t-train-body">' + minTxt + '</span>' +
@@ -732,7 +848,6 @@
     });
 
     el.track.innerHTML = html;
-    el.trackCaption.textContent = dir === 'up' ? '← 왼쪽에서 진입 · 상행' : '← 왼쪽에서 진입 · 하행';
   }
 
   function statusOf(r) {
@@ -750,13 +865,16 @@
     return '정보 없음';
   }
 
-  function renderTrainList(rows, now) {
+  function renderTrainList(rows, view) {
     var html = '';
     var shown = 0;
     var visible = rows.slice(0, 8);
+    var hasExpress = false;
+
     visible.forEach(function (r) {
       var t = r.t;
       var st = statusOf(r);
+      if (t.express || t.itx) hasExpress = true;
       var typePill = t.itx ? '<span class="pill pill-itx">ITX</span>' :
         t.express ? '<span class="pill pill-exp">급행</span>' :
           '<span class="pill pill-normal">일반</span>';
@@ -768,13 +886,15 @@
         var stTxt = t.stateLabel === '전역' || !t.stateLabel ? '출발' : t.stateLabel;
         loc = t.atStation + '역 ' + stTxt + (t.away ? ' · ' + t.away + '개 역 전' : '');
       }
-      else if (t.stateLabel) loc = '기준역 ' + t.stateLabel;
+      else if (t.stateLabel) loc = '출발역 ' + t.stateLabel;
       else loc = t.msg2 ? t.msg2 : '위치 확인 중';
+
+      var reachPill = t.reaches === null && !t.dest ? '<span class="pill pill-normal">행선지 미상</span>' : '';
 
       html += '<article class="tcard" data-state="' + (r.eta == null ? 'none' : r.kind) + '">' +
         '<div class="tcard-eta' + (r.eta != null && r.eta < 45 ? ' is-now' : '') + '"><b>' + etaTxt + '</b><span>' + etaUnit + '</span></div>' +
         '<div class="tcard-main">' +
-        '<div class="tcard-dest">' + esc(t.dest || '행선지 미상') + ' <span class="to">방면</span>' + typePill + lastPill + '</div>' +
+        '<div class="tcard-dest"><span class="tdest">' + esc(t.dest || '행선지 미상') + '<span class="to">행</span></span>' + typePill + lastPill + reachPill + '</div>' +
         '</div>' +
         '<span class="tcard-status ' + st.cls + '">' + st.text + '</span>' +
         '<div class="tcard-src"><span class="tcard-loc">' + esc(loc) + '</span>' +
@@ -787,24 +907,41 @@
     });
 
     el.trainList.innerHTML = html;
-    var total = rows.length;
-    el.trainCount.textContent = total ? (S.tab === 'up' ? '상행' : '하행') + ' ' + total + '대' +
-      (total > visible.length ? ' · 가까운 ' + visible.length + '대' : '') : '';
+    var total = view.kept.length;
+    el.trainCount.textContent = total
+      ? routeLabel() + ' ' + total + '대' + (total > visible.length ? ' · 가까운 ' + visible.length + '대' : '')
+      : '';
+
+    if (view.excluded) {
+      var dests = view.excludedDests.slice(0, 3).join('·');
+      el.filterNote.innerHTML = '도착역까지 못 가는 열차 <b>' + view.excluded + '대</b> 제외됨' +
+        (dests ? ' (' + esc(dests) + '행)' : '');
+      el.filterNote.classList.remove('hidden');
+    } else {
+      el.filterNote.classList.add('hidden');
+      el.filterNote.innerHTML = '';
+    }
+
+    if (hasExpress) {
+      el.expNote.textContent = '급행·ITX는 정차역이 달라요 · ' + S.s.arr + '역 정차 여부를 승강장 안내로 확인하세요.';
+      el.expNote.classList.remove('hidden');
+    } else {
+      el.expNote.classList.add('hidden');
+    }
 
     if (!shown) {
       el.trainEmpty.classList.remove('hidden');
       el.trainEmpty.innerHTML = S.meta.error
         ? '실시간 정보를 불러오지 못했어요.<br><small>' + esc(S.meta.error) + '</small>'
-        : '이 방향으로 오는 열차가 지금은 없어요.<br><small>운행 시간대가 아니거나 데이터가 비어 있어요.</small>';
+        : '지금은 ' + esc(S.s.arr) + '까지 가는 열차가 안 보여요.<br><small>운행 시간대가 아니거나 데이터가 비어 있어요.</small>';
     } else {
       el.trainEmpty.classList.add('hidden');
     }
   }
 
-  function renderStatus(now, rows) {
+  function renderStatus(now) {
     var txt = S.meta.mode === 'demo' ? '데모 데이터' : '서울시 실시간 데이터';
     if (S.meta.fetchedAt) txt += ' · ' + clockSec(S.meta.fetchedAt) + ' 갱신';
-    if (S.s.flip) txt += ' · 방향 반전됨';
     el.statusMeta.textContent = txt;
     if (S.meta.error) {
       el.statusError.classList.remove('hidden');
@@ -815,24 +952,185 @@
     }
   }
 
+  /* ── 준비하기 · 출발 벨소리 ────────────────────────── */
+  function unlockAudio() {
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return false;
+      if (!ready.ctx) ready.ctx = new AC();
+      if (ready.ctx.state === 'running') return true;
+      if (ready.ctx.state === 'suspended') ready.ctx.resume();
+      // 무음 버스트로 자동재생 정책 잠금을 풀어 둔다
+      var t = ready.ctx.currentTime;
+      var o = ready.ctx.createOscillator();
+      var g = ready.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      o.connect(g);
+      g.connect(ready.ctx.destination);
+      o.start(t);
+      o.stop(t + 0.03);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function playBell(freq, at, len, vol) {
+    var ctx = ready.ctx;
+    if (!ctx) return;
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, at);
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(vol, at + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + len);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(at);
+    osc.stop(at + len + 0.05);
+
+    // 배음으로 맑은 종소리 느낌
+    var o2 = ctx.createOscillator();
+    var g2 = ctx.createGain();
+    o2.type = 'sine';
+    o2.frequency.setValueAtTime(freq * 2.01, at);
+    g2.gain.setValueAtTime(0.0001, at);
+    g2.gain.exponentialRampToValueAtTime(vol * 0.22, at + 0.008);
+    g2.gain.exponentialRampToValueAtTime(0.0001, at + len * 0.7);
+    o2.connect(g2);
+    g2.connect(ctx.destination);
+    o2.start(at);
+    o2.stop(at + len);
+  }
+
+  function chimeOnce() {
+    if (!ready.ctx) unlockAudio();
+    var ctx = ready.ctx;
+    if (!ctx) return;
+    if (ctx.state === 'suspended') ctx.resume();
+    var t0 = ctx.currentTime + 0.02;
+    playBell(987.77, t0, 0.60, 0.30);         // B5 딩
+    playBell(783.99, t0 + 0.30, 0.72, 0.30);  // G5 동
+  }
+
+  function vibrate() {
+    if (!navigator.vibrate) return;
+    try { navigator.vibrate([0, 90, 90, 90, 90, 260]); } catch (e) {}
+  }
+
+  function requestWake() {
+    if (!navigator.wakeLock || ready.wake) return;
+    if (!ready.armed && !ready.ringing) return;
+    try {
+      navigator.wakeLock.request('screen').then(function (sentinel) {
+        ready.wake = sentinel;
+        sentinel.addEventListener('release', function () { ready.wake = null; });
+      }).catch(function () {});
+    } catch (e) {}
+  }
+
+  function releaseWake() {
+    if (!ready.wake) return;
+    try { ready.wake.release(); } catch (e) {}
+    ready.wake = null;
+  }
+
+  function startRing(v) {
+    if (ready.ringing) return;
+    ready.ringing = true;
+    ready.latched = true;
+    ready.beats = 0;
+    if (!ready.ctx) unlockAudio();
+    if (el.alarmSub) el.alarmSub.textContent = (v && v.sub) ? v.sub : (S.s.arr + '까지 갈 열차가 곧 도착해요');
+    if (el.alarmBanner) el.alarmBanner.classList.remove('hidden');
+    chimeOnce();
+    vibrate();
+    if (ready.timer) clearInterval(ready.timer);
+    ready.timer = setInterval(function () {
+      ready.beats++;
+      chimeOnce();
+      if (ready.beats % 2 === 1) vibrate();
+    }, 2600);
+    requestWake();
+    renderReady();
+  }
+
+  function stopRing(quiet) {
+    if (ready.timer) { clearInterval(ready.timer); ready.timer = null; }
+    if (ready.ringing) {
+      ready.ringing = false;
+      ready.latched = true;
+    }
+    if (el.alarmBanner) el.alarmBanner.classList.add('hidden');
+    if (navigator.vibrate) { try { navigator.vibrate(0); } catch (e) {} }
+    renderReady();
+    if (!quiet) showToast('알람을 껐어요');
+  }
+
+  function maybeAlarm(v) {
+    if (!ready.armed) return;
+    if (v.kind === 'go') {
+      if (!ready.ringing && !ready.latched) startRing(v);
+    } else if (!ready.ringing) {
+      ready.latched = false; // 다음 '지금 출발' 순간을 다시 기다린다
+    }
+  }
+
+  function armReady() {
+    ready.armed = true;
+    ready.latched = false;
+    S.s.ready = true;
+    saveSettings();
+    var ok = unlockAudio();
+    requestWake();
+    renderReady();
+    showToast(ok ? '준비 완료 · 지금 출발!이 되면 벨소리가 울려요' : '이 브라우저는 벨소리를 재생할 수 없어요');
+    renderLive(); // 이미 '지금 출발!'이면 바로 울린다
+  }
+
+  function disarmReady(silent) {
+    ready.armed = false;
+    ready.latched = false;
+    S.s.ready = false;
+    saveSettings();
+    stopRing(true);
+    releaseWake();
+    renderReady();
+    if (!silent) showToast('준비를 껐어요');
+  }
+
+  function toggleReady() {
+    if (ready.armed) disarmReady();
+    else armReady();
+  }
+
+  function renderReady() {
+    if (!el.readyBtn) return;
+    el.readyBtn.classList.toggle('is-on', ready.armed);
+    el.readyBtn.classList.toggle('is-ringing', ready.ringing);
+    el.readyBtn.setAttribute('aria-pressed', ready.armed ? 'true' : 'false');
+    el.readyBtn.querySelector('.rb-txt').textContent = ready.armed ? '준비 중' : '준비하기';
+    el.readyTest.classList.toggle('hidden', !ready.armed);
+    el.readyHint.classList.toggle('hidden', !ready.armed);
+  }
+
   /* ── 이벤트 ────────────────────────────────────────── */
   function bind() {
     el.refreshBtn.addEventListener('click', function () {
-      refresh('manual');
+      refresh();
       showToast('새로고침했어요');
     });
 
-    el.stationBtn.addEventListener('click', function () { openStationSheet(); });
+    el.depBtn.addEventListener('click', function () { openStationSheet('dep'); });
+    el.arrBtn.addEventListener('click', function () { openStationSheet('arr'); });
+    el.swapBtn.addEventListener('click', function () { swapEnds(false); });
     el.settingsBtn.addEventListener('click', function () { openSettings(); });
 
-    Array.prototype.forEach.call(document.querySelectorAll('.dir-tab'), function (btn) {
-      btn.addEventListener('click', function () {
-        S.tab = btn.getAttribute('data-dir');
-        S.s.dir = S.tab;
-        saveSettings();
-        renderTabs();
-        renderLive();
-      });
+    el.readyBtn.addEventListener('click', toggleReady);
+    el.readyTest.addEventListener('click', previewBell);
+    el.alarmStop.addEventListener('click', function () {
+      stopRing(true);
+      disarmReady(true);
+      showToast('알람을 끄고 준비를 마쳤어요');
     });
 
     bindStep(el.walkMinus, -1);
@@ -843,13 +1141,6 @@
       S.countdown = REFRESH_SEC;
       saveSettings();
       renderLive();
-    });
-
-    el.mirrorBtn.addEventListener('click', function () {
-      S.s.flip = !S.s.flip;
-      saveSettings();
-      showToast(S.s.flip ? '상·하행 방향을 뒤집었어요' : '방향을 원래대로 돌렸어요');
-      refresh('flip');
     });
 
     Array.prototype.forEach.call(document.querySelectorAll('[data-close]'), function (b) {
@@ -870,18 +1161,29 @@
 
     el.saveBtn.addEventListener('click', saveSettingsFromSheet);
     el.testBtn.addEventListener('click', testConnection);
+    el.bellTest.addEventListener('click', previewBell);
 
     Array.prototype.forEach.call(document.querySelectorAll('input[name="source"]'), function (r) {
       r.addEventListener('change', syncSourceFields);
     });
 
     document.addEventListener('visibilitychange', function () {
-      if (document.hidden) {
-        S.lastVisible = Date.now();
-      } else if (S.s.auto && Date.now() - S.meta.fetchedAt > REFRESH_SEC * 1000) {
-        refresh('visible');
-      }
+      if (document.hidden) return;
+      if (ready.armed) requestWake();
+      if (S.s.auto && Date.now() - S.meta.fetchedAt > REFRESH_SEC * 1000) refresh();
     });
+
+    // 준비 중에는 아무 터치나 오디오 잠금 해제 계기로 쓴다
+    document.addEventListener('pointerdown', function () {
+      if (ready.armed) unlockAudio();
+    }, true);
+  }
+
+  function previewBell() {
+    var ok = unlockAudio();
+    if (!ok) { showToast('이 브라우저는 벨소리를 재생할 수 없어요'); return; }
+    chimeOnce();
+    showToast('벨소리 미리듣기');
   }
 
   function stepWalk(delta) {
@@ -928,56 +1230,101 @@
     btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   }
 
-  /* ── 기준역 시트 ───────────────────────────────────── */
-  function openStationSheet() {
+  /* ── 출발역/도착역 바꾸기 ──────────────────────────── */
+  function swapEnds(silent) {
+    var d = S.s.dep;
+    S.s.dep = S.s.arr;
+    S.s.arr = d;
+    saveSettings();
+    S.tab = D.dirToward(S.s.dep, S.s.arr) || 'down';
+    stopRing(true);
+    ready.latched = false;
+    renderStation();
+    renderLive();
+    refresh();
+    if (!silent) showToast('출발역과 도착역을 바꿨어요');
+  }
+
+  function routeChanged() {
+    S.tab = D.dirToward(S.s.dep, S.s.arr) || 'down';
+    stopRing(true);
+    ready.latched = false;
+    renderStation();
+    renderLive();
+    refresh();
+  }
+
+  /* ── 역 선택 시트 ──────────────────────────────────── */
+  function openStationSheet(which) {
+    sheetTarget = which === 'arr' ? 'arr' : 'dep';
+    el.stationSheetTitle.textContent = sheetTarget === 'dep' ? '출발역 선택' : '도착역 선택';
+    el.stationSearch.placeholder = sheetTarget === 'dep' ? '출발역 검색 (예: 두정, 아산)' : '도착역 검색 (예: 아산, 서울)';
     el.stationSearch.value = '';
     renderStationList('');
     el.stationSheet.classList.remove('hidden');
-    setTimeout(function () { el.stationSearch.focus(); }, 120);
+    setTimeout(function () {
+      el.stationSearch.focus();
+      var cur = el.stationList.querySelector('.is-current');
+      if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'center' });
+    }, 120);
+  }
+
+  function stationItem(s) {
+    var isDep = s.name === S.s.dep;
+    var isArr = s.name === S.s.arr;
+    var isCurrent = sheetTarget === 'dep' ? isDep : isArr;
+    var badge = isDep ? '<span class="st-end">출발</span>'
+      : isArr ? '<span class="st-end st-end-arr">도착</span>' : '';
+    return '<button class="st-item' + (isCurrent ? ' is-current' : '') + '" type="button" data-station="' + esc(s.name) + '">' +
+      '<span><span class="st-name">' + esc(s.name) + '</span>' +
+      (s.transfer ? '<span class="st-transfer">' + esc(s.transfer) + '</span>' : '') + '</span>' +
+      badge + '</button>';
   }
 
   function renderStationList(query) {
-    var q = D.normalize(query || '');
-    var all = D.stationList();
-    var list = q ? all.filter(function (s) { return s.name.indexOf(q) >= 0; })
-      : all.filter(function (s) { return s.major; });
+    var q = String(query || '').trim();
     var html = '';
-    if (!q) html += '<div class="st-group">주요 역</div>';
-    else if (!list.length) html += '<div class="st-group">검색 결과가 없어요</div>';
+    var list = q ? D.searchStations(q) : D.stationList();
 
-    list.forEach(function (s) {
-      html += '<button class="st-item' + (s.name === S.s.station ? ' is-current' : '') + '" type="button" data-station="' + esc(s.name) + '">' +
-        '<span><span class="st-name">' + esc(s.name) + '</span>' +
-        (s.transfer ? '<span class="st-transfer">' + esc(s.transfer) + '</span>' : '') + '</span>' +
-        (s.name === S.s.station ? '<span class="st-check">✓</span>' : '') +
-        '</button>';
-    });
+    if (!q) {
+      html += '<div class="st-group">주요 역</div>';
+      list.filter(function (s) { return s.major; }).forEach(function (s) { html += stationItem(s); });
+    } else {
+      if (!list.length) html += '<div class="st-group">검색 결과가 없어요</div>';
+      list.forEach(function (s) { html += stationItem(s); });
+      var alias = D.aliasOf(q);
+      if (alias && alias !== D.normalize(q)) {
+        html += '<div class="st-group">‘' + esc(q) + '’ → ' + esc(alias) + '역으로 찾았어요</div>';
+      }
+    }
 
     if (!q) {
       html += '<div class="st-group">1호선 전체 역</div>';
-      all.forEach(function (s) {
+      list.forEach(function (s) {
         if (s.major) return;
-        html += '<button class="st-item' + (s.name === S.s.station ? ' is-current' : '') + '" type="button" data-station="' + esc(s.name) + '">' +
-          '<span><span class="st-name">' + esc(s.name) + '</span>' +
-          (s.transfer ? '<span class="st-transfer">' + esc(s.transfer) + '</span>' : '') + '</span>' +
-          (s.name === S.s.station ? '<span class="st-check">✓</span>' : '') +
-          '</button>';
+        html += stationItem(s);
       });
     }
 
     el.stationList.innerHTML = html;
     Array.prototype.forEach.call(el.stationList.querySelectorAll('[data-station]'), function (b) {
-      b.addEventListener('click', function () {
-        var name = b.getAttribute('data-station');
-        S.s.station = name;
-        saveSettings();
-        closeSheets();
-        renderStation();
-        renderTabs();
-        refresh('station');
-        showToast(name + '역 기준으로 바꿨어요');
-      });
+      b.addEventListener('click', function () { pickStation(b.getAttribute('data-station')); });
     });
+  }
+
+  function pickStation(name) {
+    var other = sheetTarget === 'dep' ? S.s.arr : S.s.dep;
+    if (name === other) {
+      closeSheets();
+      swapEnds(false);
+      return;
+    }
+    if (sheetTarget === 'dep') S.s.dep = name;
+    else S.s.arr = name;
+    saveSettings();
+    closeSheets();
+    routeChanged();
+    showToast((sheetTarget === 'dep' ? '출발역을 ' : '도착역을 ') + stationLabel(name) + '으로 바꿨어요');
   }
 
   /* ── 설정 시트 ─────────────────────────────────────── */
@@ -1017,7 +1364,7 @@
     S.s.proxy = proxy;
     saveSettings();
     closeSheets();
-    refresh('settings');
+    refresh();
     showToast(val === 'demo' ? '데모 모드로 돌아왔어요' : '실데이터로 연결해 볼게요');
   }
 
@@ -1045,9 +1392,9 @@
     setTest('확인 중…');
     el.testBtn.disabled = true;
 
-    fetchArrivals(S.s.station).then(function (list) {
+    fetchArrivals(S.s.dep).then(function (list) {
       if (!list.length) {
-        setTest('연결은 됐지만 ' + S.s.station + '역 1호선 데이터가 비어 있어요. (운행 시간대 확인)', 'err');
+        setTest('연결은 됐지만 ' + S.s.dep + '역 1호선 데이터가 비어 있어요. (운행 시간대 확인)', 'err');
       } else {
         setTest('성공! 열차 ' + list.length + '대를 받았어요. 저장하면 화면에 반영돼요.', 'ok');
       }
@@ -1070,7 +1417,7 @@
   function tick() {
     if (S.s.auto) {
       S.countdown -= 1;
-      if (S.countdown <= 0 && !S.loading) { refresh('timer'); return; }
+      if (S.countdown <= 0 && !S.loading) { refresh(); return; }
     }
     renderLive();
   }
@@ -1083,24 +1430,36 @@
       modeText: $('modeText'),
       refreshBtn: $('refreshBtn'),
       settingsBtn: $('settingsBtn'),
-      stationBtn: $('stationBtn'),
-      stationName: $('stationName'),
+      depBtn: $('depBtn'),
+      arrBtn: $('arrBtn'),
+      swapBtn: $('swapBtn'),
+      depName: $('depName'),
+      arrName: $('arrName'),
       verdictCard: $('verdictCard'),
       verdictBody: $('verdictBody'),
       walkValue: $('walkValue'),
       walkMinus: $('walkMinus'),
       walkPlus: $('walkPlus'),
+      readyBtn: $('readyBtn'),
+      readyTest: $('readyTest'),
+      readyHint: $('readyHint'),
+      alarmBanner: $('alarmBanner'),
+      alarmSub: $('alarmSub'),
+      alarmStop: $('alarmStop'),
+      bellTest: $('bellTest'),
       autoToggle: $('autoToggle'),
       countdown: $('countdown'),
-      mirrorBtn: $('mirrorBtn'),
       statusMeta: $('statusMeta'),
       statusError: $('statusError'),
       track: $('track'),
       trackCaption: $('trackCaption'),
       trainList: $('trainList'),
       trainCount: $('trainCount'),
+      filterNote: $('filterNote'),
+      expNote: $('expNote'),
       trainEmpty: $('trainEmpty'),
       stationSheet: $('stationSheet'),
+      stationSheetTitle: $('stationSheetTitle'),
       stationSearch: $('stationSearch'),
       stationList: $('stationList'),
       settingsSheet: $('settingsSheet'),
@@ -1114,10 +1473,13 @@
     };
 
     bind();
-    renderStation();
-    renderTabs();
-    renderLive();
-    refresh('boot');
+
+    // 지난번에 준비하기를 켜 둔 상태라면 이어서 감시한다(소리는 첫 터치 뒤부터)
+    ready.armed = !!S.s.ready;
+    if (ready.armed) requestWake();
+
+    renderAll();
+    refresh();
 
     S.ticker = setInterval(tick, 1000);
 

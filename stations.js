@@ -6,6 +6,8 @@
      기준역까지 남은 시간을 계산할 수 있도록 구간 시간표를 내장한다.
    - 소요시간은 평시 기준 근사값(역간 2~6분)이며, 실제 운행과는
      ±1~2분 차이가 날 수 있다.
+   - 출발역 → 도착역을 받으면 노선 그래프에서 방향(상·하행), 경로,
+     그리고 "이 종착역이 도착역까지 실제로 닿는지"를 판정한다.
    ============================================================ */
 (function (global) {
   'use strict';
@@ -56,7 +58,7 @@
     ['병점', '서동탄', 2]
   ];
 
-  /* 노선 경로(역 순서). 상행 = 배열의 뒤쪽(축 값이 커지는 쪽) 방향 */
+  /* 노선 경로(역 순서). 축 값이 커지는 방향이 상행(서울·청량리·연천 방면) */
   const ROUTE_MAIN = [
     '인천', '동인천', '도원', '제물포', '도화', '주안', '간석', '동암',
     '백운', '부평', '부개', '송내', '중동', '부천', '소사', '역곡', '온수',
@@ -109,6 +111,21 @@
     '평택': 'KTX(평택지제)'
   };
 
+  /* 검색 별칭: 헷갈리기 쉬운 이름 → 1호선 역명 */
+  const ALIASES = {
+    '천안아산': '아산',
+    '천안아산역': '아산',
+    '천안아산(KTX)': '아산',
+    '서울': '서울역',
+    '서울역(KTX)': '서울역',
+    '서울역ktx': '서울역',
+    '청량리역': '청량리',
+    '수원역': '수원',
+    '인천역': '인천',
+    '부평역': '부평',
+    '평택역': '평택'
+  };
+
   /* 축(axis) 값: 값이 커지는 방향이 상행(서울·청량리·연천 방면) */
   const AXIS = {};
   ROUTE_MAIN.forEach(function (n, i) { AXIS[n] = i; });
@@ -129,7 +146,24 @@
     return s;
   }
 
-  /* 역명 표기(API는 '서울역', 화면은 '서울역' 그대로 사용) */
+  function isStation(name) {
+    return AXIS.hasOwnProperty(normalize(name));
+  }
+
+  /* 검색어의 별칭 대상 역명 (없으면 '') */
+  function aliasOf(query) {
+    var s = String(query || '').trim();
+    if (!s) return '';
+    var low = s.toLowerCase();
+    if (ALIASES.hasOwnProperty(s)) return ALIASES[s];
+    if (ALIASES.hasOwnProperty(low)) return ALIASES[low];
+    var n = normalize(s);
+    if (ALIASES.hasOwnProperty(n)) return ALIASES[n];
+    if (ALIASES.hasOwnProperty(n.toLowerCase())) return ALIASES[n.toLowerCase()];
+    if (AXIS.hasOwnProperty(n)) return n;
+    return '';
+  }
+
   const NAMES = Object.keys(AXIS);
 
   /* 다익스트라: 두 역 사이 최소 구간 합(분) */
@@ -152,10 +186,11 @@
     }
   }
 
-  /* 두 역 사이 경유역 목록 */
+  /* 두 역 사이 경유역 목록(최단 경로) */
   function pathBetween(a, b) {
     a = normalize(a); b = normalize(b);
     if (!AXIS.hasOwnProperty(a) || !AXIS.hasOwnProperty(b)) return null;
+    if (a === b) return [a];
     const dist = {}; const prev = {}; const done = {}; dist[a] = 0;
     for (;;) {
       let cur = null, best = Infinity;
@@ -174,66 +209,6 @@
     return out;
   }
 
-  /* 기준역에서 한쪽 방향으로 뻗는 역 순서 */
-  function sideSequence(ref, dir, count) {
-    ref = normalize(ref);
-    const up = dir === 'up';
-    const iMain = ROUTE_MAIN.indexOf(ref);
-    const iSouth = ROUTE_SOUTH.indexOf(ref);
-    const southRev = ROUTE_SOUTH.slice().reverse();
-
-    if (up) {
-      if (iMain >= 0) return ROUTE_MAIN.slice(iMain + 1, iMain + 1 + count);
-      if (iSouth >= 0) {
-        const i = southRev.indexOf(ref);
-        return southRev.slice(i + 1, i + 1 + count);
-      }
-      return ref === '서동탄' ? ['병점'] : [];
-    }
-
-    // 하행
-    if (ref === '구로') return ROUTE_SOUTH.slice(1, 1 + count);
-    if (iMain >= 0) {
-      if (AXIS[ref] < AXIS['구로']) {
-        // 인천지선: 하행은 인천 쪽
-        return ROUTE_MAIN.slice(0, iMain).reverse().slice(0, count);
-      }
-      // 구로 위쪽: 하행은 구로까지 내려간 뒤 경부선 남부로 이어진다
-      var iGuro = ROUTE_MAIN.indexOf('구로');
-      var toGuro = ROUTE_MAIN.slice(iGuro, iMain).reverse();
-      return toGuro.concat(ROUTE_SOUTH.slice(1)).slice(0, count);
-    }
-    if (iSouth >= 0) return ROUTE_SOUTH.slice(iSouth + 1, iSouth + 1 + count);
-    if (ref === '서동탄') return ['병점'];
-    return [];
-  }
-
-  /* 기준역으로 들어오는 쪽(도착측) 역 목록: 가까운 역부터 */
-  function approachStations(ref, dir, count) {
-    return sideSequence(ref, dir === 'up' ? 'down' : 'up', count);
-  }
-
-  /* 기준역을 지나 나가는 쪽(출발측) 역 목록 */
-  function departureStations(ref, dir, count) {
-    return sideSequence(ref, dir, count);
-  }
-
-  /* 방향 라벨 */
-  function directionMeta(ref) {
-    ref = normalize(ref);
-    const inIncheon = ROUTE_MAIN.indexOf(ref) >= 0 && AXIS[ref] <= AXIS['구일'];
-    if (inIncheon) {
-      return {
-        up: { label: '상행', hint: '구로·서울 방면', arrow: '↑' },
-        down: { label: '하행', hint: '인천 방면', arrow: '↓' }
-      };
-    }
-    return {
-      up: { label: '상행', hint: '서울·청량리·연천 방면', arrow: '↑' },
-      down: { label: '하행', hint: '천안·신창 방면', arrow: '↓' }
-    };
-  }
-
   function axisOf(name) {
     const n = normalize(name);
     return AXIS.hasOwnProperty(n) ? AXIS[n] : null;
@@ -246,6 +221,74 @@
     if (b > a) return 1;
     if (b < a) return -1;
     return 0;
+  }
+
+  /* 출발역에서 도착역으로 갈 때의 진행 방향: 'up' | 'down' | null
+     (막다른 지선·같은 역이면 null. 첫 구간의 축 변화로 판단한다) */
+  function dirToward(from, to) {
+    from = normalize(from); to = normalize(to);
+    if (from === to) return null;
+    const p = pathBetween(from, to);
+    if (!p || p.length < 2) return null;
+    const a = AXIS[p[0]], b = AXIS[p[1]];
+    if (a === undefined || b === undefined) return null;
+    return b > a ? 'up' : 'down';
+  }
+
+  /* 종착역(terminal)이 출발역 → 도착역 구간을 지나 도착역까지 닿는지
+     true = 탈 수 있음, false = 도착역 전에 끝남, null = 역명을 모름 */
+  function reaches(dep, arr, terminal) {
+    dep = normalize(dep); arr = normalize(arr);
+    const t = normalize(terminal);
+    if (!t || !AXIS.hasOwnProperty(t) || !AXIS.hasOwnProperty(dep) || !AXIS.hasOwnProperty(arr)) return null;
+    if (t === dep) return false;
+    const p = pathBetween(dep, t);
+    if (!p) return null;
+    return p.indexOf(arr) >= 0;
+  }
+
+  /* 경로의 정거장 수(구간 수) */
+  function stopsBetween(a, b) {
+    const p = pathBetween(a, b);
+    return p ? p.length - 1 : null;
+  }
+
+  /* 출발역에서 도착역 방향으로 이어지는 역 목록(가까운 역부터) */
+  function routeAhead(dep, arr, count) {
+    const p = pathBetween(dep, arr);
+    if (!p || p.length < 2) return [];
+    return p.slice(1, 1 + count);
+  }
+
+  /* 출발역으로 들어오는 쪽 역 목록(도착역 반대편, 가까운 역부터)
+     - 출발역에서 도착역으로 나가는 첫 구간을 뺀 나머지 이웃에서
+       노선 본선 쪽(축 값이 큰 쪽)을 따라간다. */
+  function incomingSide(dep, arr, count) {
+    dep = normalize(dep); arr = normalize(arr);
+    const p = pathBetween(dep, arr);
+    const outgoing = p && p.length > 1 ? p[1] : null;
+    const seen = {}; seen[dep] = true;
+
+    function nextFrom(cur) {
+      const cand = Object.keys(ADJ[cur] || {}).filter(function (n) {
+        return !seen[n] && n !== outgoing;
+      });
+      cand.sort(function (a, b) {
+        const av = AXIS[a] === undefined ? -1e9 : AXIS[a];
+        const bv = AXIS[b] === undefined ? -1e9 : AXIS[b];
+        return bv - av;
+      });
+      return cand.length ? cand[0] : null;
+    }
+
+    var cur = nextFrom(dep);
+    const out = [];
+    for (var i = 0; i < count && cur; i++) {
+      out.push(cur);
+      seen[cur] = true;
+      cur = nextFrom(cur);
+    }
+    return out;
   }
 
   /* 역 선택 목록: 주요 역 우선 + 전체 */
@@ -271,19 +314,41 @@
     return out;
   }
 
+  /* 역 검색(별칭 포함): '천안아산' → 아산 처럼 헷갈리는 이름도 찾아 준다 */
+  function searchStations(query) {
+    const raw = String(query || '').trim();
+    const n = normalize(raw);
+    const alias = aliasOf(raw);
+    const list = stationList();
+    if (!raw) return list;
+    return list.filter(function (s) {
+      if (s.name.indexOf(n) >= 0) return true;
+      return !!alias && s.name === alias;
+    }).map(function (s) {
+      const byAlias = !!alias && s.name === alias && s.name.indexOf(n) < 0;
+      return { name: s.name, transfer: s.transfer, major: s.major, alias: byAlias };
+    });
+  }
+
   global.Subway1Data = {
     SEGMENTS: SEGMENTS,
     NAMES: NAMES,
     MAJOR: MAJOR,
     TRANSFER: TRANSFER,
+    ALIASES: ALIASES,
     normalize: normalize,
+    isStation: isStation,
+    aliasOf: aliasOf,
     minutesBetween: minutesBetween,
     pathBetween: pathBetween,
-    approachStations: approachStations,
-    departureStations: departureStations,
-    directionMeta: directionMeta,
+    dirToward: dirToward,
+    reaches: reaches,
+    stopsBetween: stopsBetween,
+    routeAhead: routeAhead,
+    incomingSide: incomingSide,
     directionBetween: directionBetween,
     axisOf: axisOf,
-    stationList: stationList
+    stationList: stationList,
+    searchStations: searchStations
   };
 })(window);
