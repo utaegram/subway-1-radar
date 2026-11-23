@@ -55,6 +55,10 @@
   var el = {};
   var sheetTarget = 'dep';
 
+  /* 즐겨찾기 역(★) — 역 선택 목록 맨 위에 고정 */
+  var LS_FAV = 'subway1.favorites.v1';
+  var FAV = loadFavorites();
+
   /* ── 저장소 ────────────────────────────────────────── */
   function loadSettings() {
     var out = {}, k, raw = null;
@@ -83,6 +87,49 @@
 
   function saveSettings() {
     try { localStorage.setItem(LS_KEY, JSON.stringify(S.s)); } catch (e) {}
+  }
+
+  function loadFavorites() {
+    var out = [];
+    var raw = null;
+    try { raw = localStorage.getItem(LS_FAV); } catch (e) { raw = null; }
+    if (!raw) return out;
+    try {
+      var arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return out;
+      arr.forEach(function (n) {
+        var v = D.normalize(n);
+        if (D.isStation(v) && out.indexOf(v) < 0) out.push(v);
+      });
+    } catch (e) { /* 깨진 저장소는 빈 목록으로 */ }
+    return out;
+  }
+
+  function saveFavorites() {
+    try { localStorage.setItem(LS_FAV, JSON.stringify(FAV)); } catch (e) {}
+  }
+
+  function isFav(name) {
+    return FAV.indexOf(D.normalize(name)) >= 0;
+  }
+
+  function toggleFav(name) {
+    var n = D.normalize(name);
+    if (!D.isStation(n)) return;
+    var i = FAV.indexOf(n);
+    if (i >= 0) {
+      FAV.splice(i, 1);
+      showToast(n + '역 즐겨찾기 해제');
+    } else {
+      FAV.push(n);
+      showToast(n + '역을 맨 위에 고정했어요');
+    }
+    saveFavorites();
+    // 목록을 다시 그려도 보던 위치를 유지한다
+    var scroller = el.stationList ? el.stationList.parentNode : null;
+    var top = scroller ? scroller.scrollTop : 0;
+    renderStationList(el.stationSearch ? el.stationSearch.value : '');
+    if (scroller) scroller.scrollTop = top;
   }
 
   /* ── 유틸 ──────────────────────────────────────────── */
@@ -709,41 +756,18 @@
   }
 
   function renderVerdict(v, now) {
-    var walk = S.s.walk;
-    var stops = D.stopsBetween(S.s.dep, S.s.arr);
-    var mins = D.minutesBetween(S.s.dep, S.s.arr);
-    var html = '';
-
-    html += '<div class="v-top"><span class="v-kicker">' + esc(S.s.dep) + ' → ' + esc(S.s.arr) +
-      (stops ? ' · ' + stops + '정거장' : '') + ' · ' + routeLabel() + routeArrow() +
-      '</span><span class="v-clock">' + clock(now) + '</span></div>';
-
     var icon = v.kind === 'go' ? '🏃' : v.kind === 'wait' ? '⏳' : v.kind === 'miss' ? '😵‍💫' : '🚉';
-    html += '<div class="v-main"><div class="v-icon" aria-hidden="true">' + icon + '</div>' +
-      '<div class="v-maintext"><h2 class="v-title">' + esc(v.title) + '</h2>' +
-      '<p class="v-sub">' + esc(v.sub) + '</p></div></div>';
+    var departAt = v.best && v.best.eta != null ? now + v.best.eta * 1000 : null;
 
-    html += '<div class="v-foot">';
-    if (v.kind === 'miss') {
-      html += '<span class="v-chip">가장 가까운 열차<b>' +
-        (v.next && v.next.eta != null ? Math.round(v.next.eta / 60) + '분 후' : '–') + '</b></span>';
-      html += '<span class="v-chip">지금 나가면<b>' + clock(now + walk * 60000) + ' 도착</b></span>';
-    } else {
-      var leaveAt = v.best ? (v.kind === 'go' ? now : now + v.best.departIn * 60000) : null;
-      var arriveAt = v.best && v.best.eta != null ? now + v.best.eta * 1000 : null;
-      html += '<span class="v-chip">나갈 시각<b>' +
-        (v.kind === 'go' ? '지금' : leaveAt ? clock(leaveAt) : '–') + '</b></span>';
-      html += '<span class="v-chip">도착<b>' +
-        (arriveAt ? clock(arriveAt) + ' · ' + Math.max(0, Math.round((arriveAt - now) / 60000)) + '분 후' : '–') + '</b></span>';
-    }
-    if (mins != null && mins > 0) {
-      html += '<span class="v-chip">' + esc(S.s.arr) + '까지<b>' + mins + '분</b></span>';
-    }
-    if (v.best) {
-      if (v.best.t.express) html += '<span class="pill pill-exp">급행</span>';
-      if (v.best.t.lastTrain) html += '<span class="pill pill-last">막차</span>';
-    }
-    html += '</div>';
+    var html = '<div class="v-main"><div class="v-icon" aria-hidden="true">' + icon + '</div>' +
+      '<div class="v-maintext"><h2 class="v-title">' + esc(v.title) + '</h2></div></div>';
+
+    html += '<div class="v-info">' +
+      '<div class="v-stat"><span class="v-stat-label">현재시각</span>' +
+      '<b class="v-stat-val">' + clock(now) + '</b></div>' +
+      '<div class="v-stat"><span class="v-stat-label">열차출발</span>' +
+      '<b class="v-stat-val">' + (departAt ? clock(departAt) : '–') + '</b></div>' +
+      '</div>';
 
     el.verdictCard.setAttribute('data-kind', v.kind);
     el.verdictBody.innerHTML = html;
@@ -1273,42 +1297,69 @@
     var isDep = s.name === S.s.dep;
     var isArr = s.name === S.s.arr;
     var isCurrent = sheetTarget === 'dep' ? isDep : isArr;
+    var fav = isFav(s.name);
     var badge = isDep ? '<span class="st-end">출발</span>'
       : isArr ? '<span class="st-end st-end-arr">도착</span>' : '';
-    return '<button class="st-item' + (isCurrent ? ' is-current' : '') + '" type="button" data-station="' + esc(s.name) + '">' +
+    return '<div class="st-row">' +
+      '<button class="st-item' + (isCurrent ? ' is-current' : '') + '" type="button" data-station="' + esc(s.name) + '">' +
       '<span><span class="st-name">' + esc(s.name) + '</span>' +
       (s.transfer ? '<span class="st-transfer">' + esc(s.transfer) + '</span>' : '') + '</span>' +
-      badge + '</button>';
+      badge + '</button>' +
+      '<button class="st-star' + (fav ? ' is-on' : '') + '" type="button" data-fav="' + esc(s.name) + '"' +
+      ' aria-pressed="' + (fav ? 'true' : 'false') + '"' +
+      ' aria-label="' + esc(s.name) + '역 즐겨찾기 ' + (fav ? '해제' : '추가') + '"' +
+      ' title="' + (fav ? '즐겨찾기 해제' : '즐겨찾기') + '">' + (fav ? '★' : '☆') + '</button>' +
+      '</div>';
   }
 
   function renderStationList(query) {
     var q = String(query || '').trim();
     var html = '';
     var list = q ? D.searchStations(q) : D.stationList();
+    var shown = {};
 
-    if (!q) {
-      html += '<div class="st-group">주요 역</div>';
-      list.filter(function (s) { return s.major; }).forEach(function (s) { html += stationItem(s); });
-    } else {
+    function group(items) {
+      var out = '';
+      items.forEach(function (s) { shown[s.name] = true; out += stationItem(s); });
+      return out;
+    }
+
+    // 즐겨찾기 역은 검색 중에도 항상 맨 위에 고정한다
+    var favItems = FAV.map(function (n) {
+      for (var i = 0; i < list.length; i++) if (list[i].name === n) return list[i];
+      return null;
+    }).filter(Boolean);
+
+    if (favItems.length) {
+      html += '<div class="st-group st-group-fav"><span class="st-group-star" aria-hidden="true">★</span> 즐겨찾기</div>';
+      html += group(favItems);
+    }
+
+    var rest = list.filter(function (s) { return !shown[s.name]; });
+
+    if (q) {
       if (!list.length) html += '<div class="st-group">검색 결과가 없어요</div>';
-      list.forEach(function (s) { html += stationItem(s); });
+      if (rest.length) {
+        if (favItems.length) html += '<div class="st-group">검색 결과</div>';
+        html += group(rest);
+      }
       var alias = D.aliasOf(q);
       if (alias && alias !== D.normalize(q)) {
         html += '<div class="st-group">‘' + esc(q) + '’ → ' + esc(alias) + '역으로 찾았어요</div>';
       }
-    }
-
-    if (!q) {
+    } else {
+      html += '<div class="st-group">주요 역</div>';
+      html += group(rest.filter(function (s) { return s.major; }));
       html += '<div class="st-group">1호선 전체 역</div>';
-      list.forEach(function (s) {
-        if (s.major) return;
-        html += stationItem(s);
-      });
+      html += group(rest.filter(function (s) { return !s.major; }));
     }
 
     el.stationList.innerHTML = html;
     Array.prototype.forEach.call(el.stationList.querySelectorAll('[data-station]'), function (b) {
       b.addEventListener('click', function () { pickStation(b.getAttribute('data-station')); });
+    });
+    Array.prototype.forEach.call(el.stationList.querySelectorAll('[data-fav]'), function (b) {
+      b.addEventListener('click', function () { toggleFav(b.getAttribute('data-fav')); });
     });
   }
 
