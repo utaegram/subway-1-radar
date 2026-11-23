@@ -581,10 +581,14 @@
   function renderStation() {
     var ref = S.s.station;
     el.stationName.textContent = ref;
-    el.walkRange.value = S.s.walk;
     el.walkValue.textContent = S.s.walk;
-    updateRangeFill();
+    syncWalkButtons();
     el.autoToggle.checked = !!S.s.auto;
+  }
+
+  function syncWalkButtons() {
+    el.walkMinus.disabled = S.s.walk <= 1;
+    el.walkPlus.disabled = S.s.walk >= 30;
   }
 
   function renderTabs() {
@@ -594,15 +598,12 @@
       var active = dir === S.tab;
       btn.classList.toggle('is-active', active);
       btn.setAttribute('aria-selected', active ? 'true' : 'false');
+      btn.setAttribute('aria-label', meta[dir].label + ' ' + meta[dir].hint);
       btn.querySelector('.dir-label').textContent = meta[dir].label;
-      btn.querySelector('.dir-hint').textContent = meta[dir].hint;
+      var hint = btn.querySelector('.dir-hint');
+      if (hint) hint.textContent = meta[dir].hint;
       btn.querySelector('.dir-arrow').textContent = meta[dir].arrow;
     });
-  }
-
-  function updateRangeFill() {
-    var pct = ((S.s.walk - 1) / 29) * 100;
-    el.walkRange.style.setProperty('--fill', pct.toFixed(1) + '%');
   }
 
   function renderLive() {
@@ -637,37 +638,33 @@
       '<div class="v-maintext"><h2 class="v-title">' + esc(v.title) + '</h2>' +
       '<p class="v-sub">' + esc(v.sub) + '</p></div></div>';
 
-    html += '<div class="v-facts">';
+    html += '<div class="v-foot">';
     if (v.kind === 'miss') {
-      html += '<div class="v-fact"><span>가장 가까운 열차</span><b>' +
-        (v.next && v.next.eta != null ? Math.round(v.next.eta / 60) + '분 후' : '–') + '</b></div>';
-      html += '<div class="v-fact"><span>지금 나가면</span><b>' + clock(now + walk * 60000) + ' 도착</b></div>';
+      html += '<span class="v-chip">가장 가까운 열차<b>' +
+        (v.next && v.next.eta != null ? Math.round(v.next.eta / 60) + '분 후' : '–') + '</b></span>';
+      html += '<span class="v-chip">지금 나가면<b>' + clock(now + walk * 60000) + ' 도착</b></span>';
     } else {
       var leaveAt = v.best ? (v.kind === 'go' ? now : now + v.best.departIn * 60000) : null;
       var arriveAt = v.best && v.best.eta != null ? now + v.best.eta * 1000 : null;
-      html += '<div class="v-fact"><span>나갈 시각</span><b>' +
-        (v.kind === 'go' ? '지금 (' + clock(now) + ')' : leaveAt ? clock(leaveAt) : '–') + '</b></div>';
-      html += '<div class="v-fact"><span>' + (v.best && v.best.t.dest ? esc(v.best.t.dest) + '행 도착' : '열차 도착') + '</span><b>' +
-        (arriveAt ? clock(arriveAt) + ' · ' + Math.max(0, Math.round((arriveAt - now) / 60000)) + '분 후' : '–') + '</b></div>';
+      html += '<span class="v-chip">나갈 시각<b>' +
+        (v.kind === 'go' ? '지금' : leaveAt ? clock(leaveAt) : '–') + '</b></span>';
+      html += '<span class="v-chip">도착<b>' +
+        (arriveAt ? clock(arriveAt) + ' · ' + Math.max(0, Math.round((arriveAt - now) / 60000)) + '분 후' : '–') + '</b></span>';
+    }
+    if (v.best) {
+      if (v.best.t.express) html += '<span class="pill pill-exp">급행</span>';
+      if (v.best.t.lastTrain) html += '<span class="pill pill-last">막차</span>';
     }
     html += '</div>';
 
-    var badges = '';
-    if (v.best) {
-      if (v.best.t.express) badges += '<span class="pill pill-exp">급행</span>';
-      if (v.best.t.lastTrain) badges += '<span class="pill pill-last">막차</span>';
-      if (v.best.t.trainNo) badges += '<span>#' + esc(v.best.t.trainNo) + '</span>';
-    }
-    html += '<div class="v-train"><span>' + (S.s.walk) + '분 이동 기준</span>' + badges + '</div>';
-
     el.verdictCard.setAttribute('data-kind', v.kind);
-    el.verdictCard.innerHTML = html;
+    el.verdictBody.innerHTML = html;
   }
 
   function renderTrack(rows, now) {
     var ref = S.s.station;
     var dir = S.tab;
-    var appr = D.approachStations(ref, dir, 3);
+    var appr = D.approachStations(ref, dir, 4);
     var dep = D.departureStations(ref, dir, 2);
 
     if (!appr.length && !dep.length) {
@@ -710,19 +707,14 @@
         '</div>';
     });
 
-    // 열차 마커: 남은 시간 → 기준역에서 떨어진 분
-    var lanes = [0, 30];
+    // 열차 마커: 남은 시간 → 기준역에서 떨어진 분 (보이는 구간 밖 열차는 목록에서 확인)
+    var lanes = [10, 30];
     var placed = [];
-    var outsideShown = 0;
     rows.forEach(function (r) {
       if (r.eta == null) return;
       if (r.eta > 60 * 120) return;
       var windowMin = Math.abs(minPos);
-      var beyond = r.eta / 60 > windowMin;
-      if (beyond) {
-        if (outsideShown >= 2) return; // 아주 먼 열차는 생략
-        outsideShown++;
-      }
+      if (r.eta / 60 > windowMin) return;
       var pos = -Math.min(r.eta / 60, windowMin);
       var x = xOf(pos);
       var lane = 0;
@@ -731,8 +723,8 @@
       }
       placed.push(x);
       var minTxt = r.eta < 45 ? '곧' : Math.round(r.eta / 60) + '분';
-      var cls = 't-train' + (r.t.express ? ' is-exp' : '') + (r.kind === 'miss' ? ' is-late' : '') +
-        (r.eta < 30 ? ' is-ref' : '') + (beyond ? ' is-outside' : '');
+      var cls = 't-train ' + (lane ? 'lane-b' : 'lane-a') + (r.t.express ? ' is-exp' : '') + (r.kind === 'miss' ? ' is-late' : '') +
+        (r.eta < 30 ? ' is-ref' : '');
       html += '<div class="' + cls + '" style="left:' + x.toFixed(2) + '%;top:' + lanes[lane] + 'px">' +
         '<span class="t-train-body">' + minTxt + '</span>' +
         '<span class="t-train-label">' + esc(r.t.dest || '') + '</span>' +
@@ -783,10 +775,10 @@
         '<div class="tcard-eta' + (r.eta != null && r.eta < 45 ? ' is-now' : '') + '"><b>' + etaTxt + '</b><span>' + etaUnit + '</span></div>' +
         '<div class="tcard-main">' +
         '<div class="tcard-dest">' + esc(t.dest || '행선지 미상') + ' <span class="to">방면</span>' + typePill + lastPill + '</div>' +
-        '<div class="tcard-loc">' + esc(loc) + '</div>' +
         '</div>' +
         '<span class="tcard-status ' + st.cls + '">' + st.text + '</span>' +
-        '<div class="tcard-src"><span class="src-chip">' + esc(sourceChip(t)) + '</span>' +
+        '<div class="tcard-src"><span class="tcard-loc">' + esc(loc) + '</span>' +
+        '<span class="src-chip">' + esc(sourceChip(t)) + '</span>' +
         (t.trainNo ? '<span>#' + esc(t.trainNo) + '</span>' : '') +
         (r.kind === 'miss' && r.etaMin != null ? '<span>' + Math.round(-r.slack) + '분 늦어요</span>' : '') +
         '</div>' +
@@ -843,16 +835,8 @@
       });
     });
 
-    el.walkRange.addEventListener('input', function () {
-      S.s.walk = Math.min(30, Math.max(1, parseInt(el.walkRange.value, 10) || 10));
-      el.walkValue.textContent = S.s.walk;
-      updateRangeFill();
-      saveSettings();
-      renderLive();
-    });
-
-    el.walkMinus.addEventListener('click', function () { stepWalk(-1); });
-    el.walkPlus.addEventListener('click', function () { stepWalk(1); });
+    bindStep(el.walkMinus, -1);
+    bindStep(el.walkPlus, 1);
 
     el.autoToggle.addEventListener('change', function () {
       S.s.auto = el.autoToggle.checked;
@@ -904,11 +888,44 @@
     var next = Math.min(30, Math.max(1, S.s.walk + delta));
     if (next === S.s.walk) return;
     S.s.walk = next;
-    el.walkRange.value = next;
     el.walkValue.textContent = next;
-    updateRangeFill();
+    syncWalkButtons();
     saveSettings();
     renderLive();
+  }
+
+  /* −/+ 를 길게 누르면 빠르게 연속 조절 (한 번 탭은 1분) */
+  function bindStep(btn, delta) {
+    var holdTimer = null;
+    var repeatTimer = null;
+    var repeated = false;
+
+    function stop() {
+      clearTimeout(holdTimer);
+      clearInterval(repeatTimer);
+      holdTimer = null;
+      repeatTimer = null;
+    }
+
+    btn.addEventListener('pointerdown', function () {
+      repeated = false;
+      stop();
+      holdTimer = setTimeout(function () {
+        repeated = true;
+        repeatTimer = setInterval(function () { stepWalk(delta); }, 110);
+      }, 420);
+    });
+
+    ['pointerup', 'pointercancel', 'pointerleave', 'blur'].forEach(function (ev) {
+      btn.addEventListener(ev, stop);
+    });
+
+    btn.addEventListener('click', function () {
+      if (repeated) { repeated = false; return; }
+      stepWalk(delta);
+    });
+
+    btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   }
 
   /* ── 기준역 시트 ───────────────────────────────────── */
@@ -1069,7 +1086,7 @@
       stationBtn: $('stationBtn'),
       stationName: $('stationName'),
       verdictCard: $('verdictCard'),
-      walkRange: $('walkRange'),
+      verdictBody: $('verdictBody'),
       walkValue: $('walkValue'),
       walkMinus: $('walkMinus'),
       walkPlus: $('walkPlus'),

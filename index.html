@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0052A4">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1C74C9">
 <meta name="description" content="수도권 전철 1호선 상·하행 실시간 열차 위치와 집에서 나갈 시각을 알려 주는 앱">
 <title>1호선 레이더</title>
 <link rel="manifest" href="manifest.json">
@@ -25,56 +26,49 @@
     </div>
     <div class="app-bar-actions">
       <button id="refreshBtn" class="icon-btn" type="button" aria-label="새로고침">
-        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M17.65 6.35A8 8 0 1 0 19.73 14h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" fill="currentColor"/></svg>
+        <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="M17.65 6.35A8 8 0 1 0 19.73 14h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" fill="currentColor"/></svg>
       </button>
       <button id="settingsBtn" class="icon-btn" type="button" aria-label="설정">
-        <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z" fill="currentColor"/></svg>
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z" fill="currentColor"/></svg>
       </button>
     </div>
   </header>
 
   <main>
-    <section class="card station-card">
-      <button id="stationBtn" class="station-pick" type="button" aria-haspopup="dialog">
+    <!-- 1행: 기준역 + 상·하행 -->
+    <div class="top-row">
+      <button id="stationBtn" class="station-pick" type="button" aria-haspopup="dialog" aria-label="기준역 선택">
         <span class="sp-pin" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z" fill="currentColor"/></svg>
+          <svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z" fill="currentColor"/></svg>
         </span>
-        <span class="sp-text">
-          <span class="sp-label">기준역 · 1호선</span>
-          <span class="sp-name" id="stationName">두정</span>
-        </span>
+        <span class="sp-name" id="stationName">두정</span>
         <span class="sp-caret" aria-hidden="true">▾</span>
       </button>
-    </section>
 
+      <nav class="dir-tabs" role="tablist" aria-label="상행 하행 선택">
+        <button class="dir-tab is-active" type="button" role="tab" data-dir="up" aria-selected="true">
+          <span class="dir-arrow">↑</span><span class="dir-label">상행</span>
+        </button>
+        <button class="dir-tab" type="button" role="tab" data-dir="down" aria-selected="false">
+          <span class="dir-arrow">↓</span><span class="dir-label">하행</span>
+        </button>
+      </nav>
+    </div>
+
+    <!-- 2행: 판정 카드 + 이동 시간 컴팩트 컨트롤 -->
     <section class="card verdict-card" id="verdictCard" aria-live="polite">
-      <div class="verdict-skeleton">불러오는 중…</div>
-    </section>
-
-    <section class="card walk-card">
-      <div class="walk-head">
-        <span class="walk-title">역까지 이동 시간</span>
-        <span class="walk-value"><strong id="walkValue">10</strong><span>분</span></span>
+      <div class="v-body" id="verdictBody">
+        <div class="verdict-skeleton">불러오는 중…</div>
       </div>
-      <div class="walk-row">
-        <button id="walkMinus" class="step-btn" type="button" aria-label="이동 시간 1분 줄이기">−</button>
-        <input id="walkRange" type="range" min="1" max="30" step="1" value="10" aria-label="역까지 이동 시간(분)">
-        <button id="walkPlus" class="step-btn" type="button" aria-label="이동 시간 1분 늘리기">+</button>
+      <div class="walk-compact">
+        <span class="wc-label">이동 &#183; 역까지</span>
+        <div class="wc-row">
+          <button id="walkMinus" class="wc-btn" type="button" aria-label="이동 시간 1분 줄이기">−</button>
+          <span class="wc-val" aria-live="off"><b id="walkValue">10</b><i>분</i></span>
+          <button id="walkPlus" class="wc-btn" type="button" aria-label="이동 시간 1분 늘리기">+</button>
+        </div>
       </div>
     </section>
-
-    <nav class="dir-tabs" role="tablist" aria-label="상행 하행 선택">
-      <button class="dir-tab is-active" type="button" role="tab" data-dir="up" aria-selected="true">
-        <span class="dir-arrow">↑</span>
-        <span class="dir-label">상행</span>
-        <span class="dir-hint">서울·청량리 방면</span>
-      </button>
-      <button class="dir-tab" type="button" role="tab" data-dir="down" aria-selected="false">
-        <span class="dir-arrow">↓</span>
-        <span class="dir-label">하행</span>
-        <span class="dir-hint">천안·신창 방면</span>
-      </button>
-    </nav>
 
     <section class="card track-card">
       <div class="card-head">
@@ -104,7 +98,7 @@
     <section class="card status-card">
       <div class="status-row">
         <label class="switch">
-          <input type="checkbox" id="autoToggle" checked>
+          <input type="checkbox" id="autoToggle" checked aria-label="30초 자동 갱신">
           <span class="switch-track" aria-hidden="true"></span>
         </label>
         <div class="status-text">
