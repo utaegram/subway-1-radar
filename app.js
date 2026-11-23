@@ -1300,7 +1300,7 @@
     var fav = isFav(s.name);
     var badge = isDep ? '<span class="st-end">출발</span>'
       : isArr ? '<span class="st-end st-end-arr">도착</span>' : '';
-    return '<div class="st-row">' +
+    return '<div class="st-row' + (isCurrent ? ' is-current' : '') + '">' +
       '<button class="st-item' + (isCurrent ? ' is-current' : '') + '" type="button" data-station="' + esc(s.name) + '">' +
       '<span><span class="st-name">' + esc(s.name) + '</span>' +
       (s.transfer ? '<span class="st-transfer">' + esc(s.transfer) + '</span>' : '') + '</span>' +
