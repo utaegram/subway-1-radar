@@ -443,7 +443,7 @@ main { padding: 8px 12px 0; display: flex; flex-direction: column; gap: 8px; }
 .wc-row { display: flex; align-items: center; gap: 1px; }
 
 .wc-btn {
-  width: 36px; height: 36px;
+  width: 40px; height: 40px;
   flex: none;
   border: 0;
   border-radius: 10px;
@@ -479,7 +479,7 @@ main { padding: 8px 12px 0; display: flex; flex-direction: column; gap: 8px; }
 
 @media (prefers-color-scheme: dark) {
   .walk-compact { background: var(--glass); border-color: var(--line-border); }
-  .wc-btn { background: rgba(255, 255, 255, .24); color: #FFFFFF; }
+  .wc-btn { background: rgba(255, 255, 255, .30); color: #FFFFFF; box-shadow: 0 1px 3px rgba(4, 30, 60, .18); }
   .wc-btn:active { background: #FFFFFF; color: #0B4F92; }
   .wc-val { color: #FFFFFF; }
   .v-chip b { color: #FFFFFF; }
@@ -1117,7 +1117,7 @@ main { padding: 8px 12px 0; display: flex; flex-direction: column; gap: 8px; }
 
 /* 아주 작은 화면(≤360px) 보정 */
 @media (max-width: 360px) {
-  .wc-btn { width: 34px; height: 34px; }
+  .wc-btn { width: 36px; height: 36px; }
   .wc-val b { font-size: 18px; }
   .v-title { font-size: 21px; }
   .sp-name { font-size: 16px; }
