@@ -1,5 +1,5 @@
 /* ============================================================
-   1호선 레이더 · style.css
+   1호선 알리미 · style.css
    1호선 상징색 #0052A4 기반 모바일 우선 UI
    - 한 화면(390×844)에 기준역·상하행 / 판정+이동시간 /
      열차 위치 / 다가오는 열차가 모두 보이도록 조밀하게 구성
@@ -123,17 +123,29 @@ button { font: inherit; color: inherit; }
 
 .brand { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 
+/* 1호선 노선 배지: 파란 원(#0052A4) + 흰 숫자 1, 정중앙 정렬 */
 .line-chip {
   flex: none;
   width: 26px; height: 26px;
-  border-radius: 9px;
-  background: #fff;
-  color: #0052A4;
+  border-radius: 50%;
+  background: #0052A4;
+  color: #fff;
   font-weight: 800;
   font-size: 16px;
-  display: grid;
-  place-items: center;
-  box-shadow: inset 0 0 0 2px rgba(0, 82, 164, .12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+  font-variant-numeric: tabular-nums;
+  box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, .9), 0 1px 3px rgba(0, 22, 54, .35);
+}
+
+/* 숫자 1: 글리프 잉크 박스가 원의 정중앙에 오도록 1.5px 하강 보정 */
+.line-chip .lc-num {
+  display: block;
+  line-height: 1;
+  transform: translateY(1.5px);
 }
 
 .brand-text { min-width: 0; }
