@@ -18,10 +18,13 @@
   var REFRESH_SEC = 30;
   var BOARD_MARGIN = 1; // 분: 승강장 도착 후 최소 여유
 
+  // 배포된 Cloudflare Worker 프록시(https+CORS 중계). 열자마자 실시간 LIVE로 동작
+  var DEFAULT_PROXY = 'https://subway-proxy.chldbxo.workers.dev';
+
   var DEFAULTS = {
-    source: 'demo',   // demo | key | proxy
+    source: 'proxy',  // demo | key | proxy
     key: '',
-    proxy: '',
+    proxy: DEFAULT_PROXY,
     walk: 10,
     dep: '두정',
     arr: '아산',
@@ -75,6 +78,11 @@
         // v1(기준역 + 상·하행) 설정 이어받기
         if (parsed.dep === undefined && parsed.station) out.dep = D.normalize(parsed.station);
       } catch (e) { /* 저장소가 깨졌으면 기본값 */ }
+    }
+    // 예전 버전에서 데모로 저장된 설정(프록시 주소 없음)은 실시간 프록시로 승격
+    if (out.source === 'demo' && !out.proxy) {
+      out.source = 'proxy';
+      out.proxy = DEFAULT_PROXY;
     }
     out.walk = Math.min(30, Math.max(1, parseInt(out.walk, 10) || 10));
     if (!D.isStation(out.dep)) out.dep = '두정';
