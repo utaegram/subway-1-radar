@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0052A4">
+<meta name="description" content="수도권 전철 1호선 상·하행 실시간 열차 위치와 집에서 나갈 시각을 알려 주는 앱">
+<title>1호선 레이더</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+
+  <header class="app-bar">
+    <div class="brand">
+      <span class="line-chip" aria-hidden="true">1</span>
+      <div class="brand-text">
+        <h1>1호선 레이더</h1>
+        <p id="modeText">데모 모드 · 시뮬레이션</p>
+      </div>
+      <span id="modeBadge" class="badge badge-demo">데모</span>
+    </div>
+    <div class="app-bar-actions">
+      <button id="refreshBtn" class="icon-btn" type="button" aria-label="새로고침">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M17.65 6.35A8 8 0 1 0 19.73 14h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" fill="currentColor"/></svg>
+      </button>
+      <button id="settingsBtn" class="icon-btn" type="button" aria-label="설정">
+        <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z" fill="currentColor"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <section class="card station-card">
+      <button id="stationBtn" class="station-pick" type="button" aria-haspopup="dialog">
+        <span class="sp-pin" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z" fill="currentColor"/></svg>
+        </span>
+        <span class="sp-text">
+          <span class="sp-label">기준역 · 1호선</span>
+          <span class="sp-name" id="stationName">두정</span>
+        </span>
+        <span class="sp-caret" aria-hidden="true">▾</span>
+      </button>
+    </section>
+
+    <section class="card verdict-card" id="verdictCard" aria-live="polite">
+      <div class="verdict-skeleton">불러오는 중…</div>
+    </section>
+
+    <section class="card walk-card">
+      <div class="walk-head">
+        <span class="walk-title">역까지 이동 시간</span>
+        <span class="walk-value"><strong id="walkValue">10</strong><span>분</span></span>
+      </div>
+      <div class="walk-row">
+        <button id="walkMinus" class="step-btn" type="button" aria-label="이동 시간 1분 줄이기">−</button>
+        <input id="walkRange" type="range" min="1" max="30" step="1" value="10" aria-label="역까지 이동 시간(분)">
+        <button id="walkPlus" class="step-btn" type="button" aria-label="이동 시간 1분 늘리기">+</button>
+      </div>
+    </section>
+
+    <nav class="dir-tabs" role="tablist" aria-label="상행 하행 선택">
+      <button class="dir-tab is-active" type="button" role="tab" data-dir="up" aria-selected="true">
+        <span class="dir-arrow">↑</span>
+        <span class="dir-label">상행</span>
+        <span class="dir-hint">서울·청량리 방면</span>
+      </button>
+      <button class="dir-tab" type="button" role="tab" data-dir="down" aria-selected="false">
+        <span class="dir-arrow">↓</span>
+        <span class="dir-label">하행</span>
+        <span class="dir-hint">천안·신창 방면</span>
+      </button>
+    </nav>
+
+    <section class="card track-card">
+      <div class="card-head">
+        <h2>열차 위치</h2>
+        <span class="track-caption" id="trackCaption">오른쪽 → 기준역 진입</span>
+      </div>
+      <div class="track" id="track">
+        <div class="track-empty">열차 위치를 그리는 중…</div>
+      </div>
+      <div class="track-legend">
+        <span><i class="lg lg-here"></i>기준역</span>
+        <span><i class="lg lg-train"></i>열차</span>
+        <span><i class="lg lg-arrive"></i>도착·진입</span>
+        <span><i class="lg lg-exp"></i>급행</span>
+      </div>
+    </section>
+
+    <section class="train-section">
+      <div class="card-head">
+        <h2>다가오는 열차</h2>
+        <span class="muted" id="trainCount"></span>
+      </div>
+      <div id="trainList" class="train-list"></div>
+      <div id="trainEmpty" class="card empty hidden"></div>
+    </section>
+
+    <section class="card status-card">
+      <div class="status-row">
+        <label class="switch">
+          <input type="checkbox" id="autoToggle" checked>
+          <span class="switch-track" aria-hidden="true"></span>
+        </label>
+        <div class="status-text">
+          <strong>30초 자동 갱신</strong>
+          <span id="countdown">대기 중</span>
+        </div>
+        <button id="mirrorBtn" class="ghost-btn small" type="button" title="상·하행이 반대로 보이면 방향을 뒤집어요">⇄ 방향 반전</button>
+      </div>
+      <p class="status-meta" id="statusMeta">–</p>
+      <p class="status-error hidden" id="statusError"></p>
+    </section>
+
+    <footer class="app-foot">
+      <p>서울특별시 열린데이터광장 · 1호선 도착정보/열차위치</p>
+      <p>코레일 구간은 도착예정시간이 비어 와서 인접 역 소요시간으로 추정해요.</p>
+    </footer>
+  </main>
+</div>
+
+<!-- 기준역 선택 -->
+<div class="sheet-backdrop hidden" id="stationSheet">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="stationSheetTitle">
+    <div class="sheet-head">
+      <h2 id="stationSheetTitle">기준역 선택</h2>
+      <button class="icon-btn" type="button" data-close="station" aria-label="닫기">✕</button>
+    </div>
+    <div class="sheet-scroll">
+      <input id="stationSearch" class="search" type="search" placeholder="역 이름 검색 (예: 수원, 천안)" autocomplete="off">
+      <div id="stationList" class="station-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 설정 -->
+<div class="sheet-backdrop hidden" id="settingsSheet">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="sheet-head">
+      <h2 id="settingsTitle">설정</h2>
+      <button class="icon-btn" type="button" data-close="settings" aria-label="닫기">✕</button>
+    </div>
+    <div class="sheet-scroll">
+      <fieldset class="field-group">
+        <legend>데이터 소스</legend>
+        <label class="radio">
+          <input type="radio" name="source" value="demo">
+          <span><b>데모 모드</b><small>실제 두정역 데이터 형식으로 움직이는 시뮬레이션</small></span>
+        </label>
+        <label class="radio">
+          <input type="radio" name="source" value="key">
+          <span><b>서울시 API 키 직접 입력</b><small>주소가 http라서 https 페이지·일부 브라우저에서는 CORS로 막힐 수 있어요</small></span>
+        </label>
+        <label class="radio">
+          <input type="radio" name="source" value="proxy">
+          <span><b>프록시 URL (권장)</b><small>Cloudflare Worker 같은 중계 서버를 거쳐 불러와요</small></span>
+        </label>
+      </fieldset>
+
+      <div class="field" id="keyField">
+        <label for="apiKey">서울 열린데이터광장 인증키</label>
+        <input id="apiKey" type="text" autocomplete="off" spellcheck="false" placeholder="예: 4f6b7c8d9e0a1b2c...">
+        <small>data.seoul.go.kr → 실시간 지하철 도착정보(OA-12764) 활용신청 후 발급되는 인증키</small>
+      </div>
+
+      <div class="field" id="proxyField">
+        <label for="proxyUrl">프록시 주소</label>
+        <input id="proxyUrl" type="url" autocomplete="off" spellcheck="false" placeholder="https://subway-proxy.이름.workers.dev">
+        <small>worker.js를 Cloudflare Workers에 올리고 주소를 넣으세요. 키를 Worker 환경변수(SEOUL_API_KEY)에 두면 앱에는 키를 저장하지 않아도 됩니다.</small>
+      </div>
+
+      <div class="btn-row">
+        <button id="testBtn" class="ghost-btn" type="button">연결 테스트</button>
+        <button id="saveBtn" class="primary-btn" type="button">저장</button>
+      </div>
+      <p class="test-result" id="testResult"></p>
+
+      <p class="fine">데모 모드는 API 키가 없어도 상·하행 열차가 실제처럼 흐르는 화면을 보여 줍니다. 키나 프록시를 저장하면 바로 실데이터로 바뀌고, 실패하면 데모로 되돌아갑니다.</p>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden" role="status"></div>
+
+<script src="stations.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
