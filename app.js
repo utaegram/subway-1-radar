@@ -1141,15 +1141,18 @@
   }
 
   /* ── 준비하기 · 출발 알람 소리 ────────────────────────
-     승강장에 열차가 들어올 때 울리는 밝은 브라스 팡파르(도·미·솔 화음)를
-     Web Audio로 직접 합성한다. 음원 파일을 받아 오지 않으므로 지하철
-     지하처럼 네트워크가 약한 곳에서도 바로 울린다.
+     서울교통공사 승강장 도착 벨(상선) 녹음 파일을 그대로 재생한다.
+     음원은 assets/arrival-bell.mp3 (약 8초, 128 kbps). fetch →
+     decodeAudioData 로 AudioBuffer 에 담아 두고, 울릴 때마다
+     AudioBufferSourceNode 로 꺼내 기존 증폭 체인에 물린다.
 
      소리 경로
-       음(브라스 + 차임) → 재생 게인 → 컴프레서 → 마스터 → 소프트 클립 → 스피커
+       음원(음량 보정 게인) → 재생 게인 → 컴프레서 → 마스터 → 소프트 클립 → 스피커
+     · 음량 보정: 원본 녹음이 작아도 RMS 를 목표치까지 끌어올린다(피크는 0.98 이하)
      · 컴프레서: 음이 겹쳐도 찢어지지 않게 눌러 주고
      · 마스터: 컴프레서 뒤에서 한 번 더 키워 폰 스피커에서도 크게
      · 소프트 클립(tanh): 0 dB를 넘어도 둥글게 눌러 찌그러짐(클리핑)을 막는다
+     · 디코딩 전·실패 시에는 <audio> 폴백으로 같은 파일을 재생한다
      ─────────────────────────────────────────────────── */
   var SOUND = {
     ctx: null,
@@ -1172,32 +1175,152 @@
     drive: 1.15       // 소프트 클립 곡선의 세기
   };
 
-  /* 승강장 도착 팡파르 — 솔-도-미-솔로 올라가 두 번 울리고 마지막 음을 길게 끈다.
-     t: 시작(초) · d: 길이(초) · v: 세기 · bell: 차임 겹치기 · chord: 화음 */
-  var PITCH = {
-    G4: 392.00, C5: 523.25, E5: 659.25, G5: 783.99, C6: 1046.50, E6: 1318.51
+  /* 승강장 도착 벨 음원 */
+  var BELL = {
+    url: './assets/arrival-bell.mp3',
+    buffer: null,     // 디코딩한 AudioBuffer
+    bytes: null,      // 미리 받아 둔 원본(디코딩은 AudioContext 가 생긴 뒤)
+    loading: null,    // fetch 진행 중인 Promise
+    decoding: null,   // decodeAudioData 진행 중인 Promise
+    dur: 0,           // 음원 길이(초)
+    gain: 1,          // 원본 음량 보정 게인
+    peak: 0,
+    rms: 0,
+    audio: null       // <audio> 폴백
   };
 
-  var MELODY = [
-    /* 1구절 — 빠밤, 빠바밤~ (도 미 솔 도) */
-    { f: PITCH.G4, t: 0.00, d: 0.11, v: 0.55 },
-    { f: PITCH.C5, t: 0.12, d: 0.11, v: 0.70 },
-    { f: PITCH.E5, t: 0.25, d: 0.12, v: 0.80 },
-    { f: PITCH.G5, t: 0.39, d: 0.30, v: 1.00, bell: 1 },
-    { f: PITCH.E5, t: 0.74, d: 0.10, v: 0.60 },
-    { f: PITCH.G5, t: 0.85, d: 0.10, v: 0.75 },
-    { f: PITCH.C6, t: 0.97, d: 0.55, v: 1.00, bell: 1, chord: [PITCH.E5, PITCH.G5] },
-    /* 2구절 — 같은 리듬을 한 옥타브 위에서 한 번 더 */
-    { f: PITCH.G5, t: 1.62, d: 0.11, v: 0.60 },
-    { f: PITCH.C6, t: 1.74, d: 0.11, v: 0.80 },
-    { f: PITCH.E6, t: 1.87, d: 0.11, v: 0.55 },
-    { f: PITCH.G5, t: 2.01, d: 0.10, v: 0.60 },
-    { f: PITCH.C6, t: 2.13, d: 0.10, v: 0.80 },
-    { f: PITCH.C6, t: 2.26, d: 0.85, v: 1.00, bell: 1, chord: [PITCH.G5, PITCH.E5] }
-  ];
+  var GAP_SEC = 1.0;      // 알람 반복 사이 숨 고르기 (음원 끝나고 1초)
+  var INTRO_SEC = 1.8;    // 준비하기를 누를 때 들려줄 앞부분(페이드아웃)
+  var BELL_RMS = 0.30;    // 음량 보정 목표 RMS (약 −10.5 dBFS)
+  var BELL_PEAK = 0.98;   // 보정 후 허용 피크
 
-  var INTRO_SEC = 0.72;   // 준비하기를 누를 때 들려줄 앞소절(도-미-솔-도)
-  var RING_EVERY = 3400;  // 알람 반복 간격 — 멜로디 3.1초 + 숨 고르기
+  /* 음원 받아 두기 — 화면을 열 때 미리 받아 첫 알람이 늦지 않게 한다 */
+  function prefetchBell() {
+    if (BELL.bytes || BELL.loading) return BELL.loading;
+    BELL.loading = fetch(BELL.url, { cache: 'force-cache' })
+      .then(function (res) {
+        if (!res || !res.ok) throw new Error('HTTP ' + (res && res.status));
+        return res.arrayBuffer();
+      })
+      .then(function (buf) { BELL.bytes = buf; BELL.loading = null; return buf; })
+      .catch(function () { BELL.loading = null; return null; });
+    return BELL.loading;
+  }
+
+  /* 받아 둔 원본을 AudioBuffer 로 디코딩해 캐시한다 */
+  function decodeBell(ctx) {
+    if (!ctx) return Promise.resolve(null);
+    if (BELL.buffer) return Promise.resolve(BELL.buffer);
+    if (BELL.decoding) return BELL.decoding;
+    BELL.decoding = prefetchBell().then(function (bytes) {
+      if (!bytes) return null;
+      return new Promise(function (resolve) {
+        var p = ctx.decodeAudioData(bytes.slice(0),
+          function (buf) { resolve(buf || null); },
+          function () { resolve(null); });
+        if (p && p.then) p.then(resolve, function () { resolve(null); });
+      });
+    }).then(function (buf) {
+      BELL.decoding = null;
+      if (!buf) return null;
+      BELL.buffer = buf;
+      BELL.bytes = null;
+      BELL.dur = buf.duration;
+      measureBell(buf);
+      return buf;
+    }).catch(function () { BELL.decoding = null; return null; });
+    return BELL.decoding;
+  }
+
+  /* 원본 녹음의 피크·RMS 를 재서 스피커에서 충분히 크게 들리는 게인을 정한다.
+     피크가 0.98 을 넘지 않는 선에서만 올리므로 원본이 이미 크면 그대로 둔다. */
+  function measureBell(buf) {
+    var peak = 0, sum = 0, n = 0;
+    for (var c = 0; c < buf.numberOfChannels; c++) {
+      var d = buf.getChannelData(c);
+      for (var i = 0; i < d.length; i++) {
+        var v = d[i];
+        if (v < 0) v = -v;
+        if (v > peak) peak = v;
+        sum += d[i] * d[i];
+      }
+      n += d.length;
+    }
+    var rms = n ? Math.sqrt(sum / n) : 0;
+    BELL.peak = peak;
+    BELL.rms = rms;
+    var g = rms > 0.0005 ? BELL_RMS / rms : 1;
+    if (peak > 0 && peak * g > BELL_PEAK) g = BELL_PEAK / peak;
+    BELL.gain = Math.max(0.5, Math.min(10, g));
+  }
+
+  /* 음원 한 번 재생 — opts.until(초)을 주면 그 앞부분만 페이드아웃하며 들려준다 */
+  function playBell(opts) {
+    opts = opts || {};
+    var ctx = ready.ctx;
+    if (!ctx || !SOUND.input || !BELL.buffer) return false;
+    var dur = BELL.dur || BELL.buffer.duration;
+    var until = opts.until && opts.until > 0 ? Math.min(opts.until, dur) : dur;
+    if (!(dur > 0) || !(until > 0)) return false;
+
+    var level = (opts.gain == null ? 1 : opts.gain) * BELL.gain;
+    var now = ctx.currentTime;
+    var g = liveGain(until * 1000 + 200);
+    try {
+      g.gain.setValueAtTime(level, now);
+      if (until < dur) {
+        g.gain.setValueAtTime(level, Math.max(now, now + until - 0.4));
+        g.gain.exponentialRampToValueAtTime(0.0001, now + until);
+      }
+    } catch (e) {}
+
+    var src = ctx.createBufferSource();
+    src.buffer = BELL.buffer;
+    src.connect(g);
+    try {
+      src.start(now);
+      if (until < dur) src.stop(now + until + 0.05);
+    } catch (e) { return false; }
+    return true;
+  }
+
+  /* 디코딩 전이거나 실패했을 때의 폴백 — <audio> 로 같은 파일을 재생한다 */
+  function playBellElement(opts) {
+    opts = opts || {};
+    try {
+      if (!BELL.audio) {
+        BELL.audio = new Audio(BELL.url);
+        BELL.audio.preload = 'auto';
+        BELL.audio.setAttribute('playsinline', '');
+      }
+      var a = BELL.audio;
+      clearTimeout(playBellElement._t);
+      a.volume = 0.95;
+      try { a.currentTime = 0; } catch (e) {}
+      var p = a.play();
+      if (p && p.catch) p.catch(function () {});
+      if (opts.until) {
+        playBellElement._t = setTimeout(function () {
+          try { a.pause(); } catch (e) {}
+        }, opts.until * 1000);
+      }
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function stopBellElement() {
+    if (!BELL.audio) return;
+    clearTimeout(playBellElement._t);
+    try { BELL.audio.pause(); BELL.audio.currentTime = 0; } catch (e) {}
+  }
+
+  /* 알람 반복 간격 — 음원 길이 + 1초 */
+  function bellPeriodMs() {
+    var d = BELL.dur;
+    if (!(d > 0) && BELL.audio && isFinite(BELL.audio.duration)) d = BELL.audio.duration;
+    if (!(d > 0)) d = 8;
+    return Math.round((d + GAP_SEC) * 1000);
+  }
 
   /* tanh 소프트 클립 곡선 — 최대 ±ALARM.peak 안에서 둥글게 눌러 준다 */
   function softCurve(n, drive) {
@@ -1252,12 +1375,14 @@
       if (!AC) return false;
       if (!ready.ctx) ready.ctx = new AC();
       if (ready.ctx.state === 'suspended') ready.ctx.resume();
-      return !!buildSound();
+      var built = !!buildSound();
+      if (built) decodeBell(ready.ctx); // 음원을 미리 디코딩해 두어 첫 알람이 늦지 않게
+      return built;
     } catch (e) { return false; }
   }
 
   /* 이번 재생 전용 게인 — '알람 끄기'에서 이 게인만 0으로 내려 바로 끊는다 */
-  function liveGain() {
+  function liveGain(holdMs) {
     var ctx = ready.ctx;
     var g = ctx.createGain();
     g.gain.value = 1;
@@ -1267,92 +1392,8 @@
       var i = SOUND.live.indexOf(g);
       if (i >= 0) SOUND.live.splice(i, 1);
       try { g.disconnect(); } catch (e) {}
-    }, 5200);
+    }, Math.max(600, holdMs || 9000) + 400);
     return g;
-  }
-
-  /* 브라스 한 음 — 톱니 두 겹 + 한 옥타브 아래 사각파를 저역통과에 물려
-     팡파르 특유의 밝고 두꺼운 소리를 만든다 */
-  function brassVoice(dest, freq, at, dur, amp) {
-    var ctx = ready.ctx;
-    var out = ctx.createGain();
-    var tone = ctx.createBiquadFilter();
-    tone.type = 'lowpass';
-    tone.Q.value = 1.2;
-    tone.frequency.setValueAtTime(Math.min(11000, freq * 6), at);
-    tone.frequency.exponentialRampToValueAtTime(
-      Math.max(600, freq * 2.2), at + Math.max(0.12, dur * 0.55));
-
-    var a = ctx.createOscillator();
-    a.type = 'sawtooth';
-    a.frequency.setValueAtTime(freq * 0.982, at);   // 살짝 올려 부는 어택
-    a.frequency.exponentialRampToValueAtTime(freq, at + 0.03);
-    a.detune.setValueAtTime(-5, at);
-
-    var b = ctx.createOscillator();
-    b.type = 'sawtooth';
-    b.frequency.setValueAtTime(freq, at);
-    b.detune.setValueAtTime(7, at);
-
-    var sub = ctx.createOscillator();
-    sub.type = 'square';
-    sub.frequency.setValueAtTime(freq * 0.5, at);
-    var subGain = ctx.createGain();
-    subGain.gain.value = 0.22;
-
-    a.connect(tone);
-    b.connect(tone);
-    sub.connect(subGain);
-    subGain.connect(tone);
-    tone.connect(out);
-    out.connect(dest);
-
-    out.gain.setValueAtTime(0.0001, at);
-    out.gain.exponentialRampToValueAtTime(amp, at + 0.022);
-    out.gain.exponentialRampToValueAtTime(amp * 0.66, at + 0.14);
-    if (dur > 0.26) out.gain.setValueAtTime(amp * 0.66, at + dur - 0.06);
-    out.gain.exponentialRampToValueAtTime(0.0001, at + dur);
-
-    [a, b, sub].forEach(function (o) { o.start(at); o.stop(at + dur + 0.06); });
-  }
-
-  /* 차임 — 사인 배음이 빠르게 사그라드는 종소리. 작은 스피커에서도 또렷하다 */
-  function bellVoice(dest, freq, at, dur, amp) {
-    var ctx = ready.ctx;
-    [[1, 1], [2.01, 0.5], [3.02, 0.24], [4.06, 0.1]].forEach(function (p) {
-      var o = ctx.createOscillator();
-      var g = ctx.createGain();
-      o.type = 'sine';
-      o.frequency.setValueAtTime(freq * p[0], at);
-      g.gain.setValueAtTime(0.0001, at);
-      g.gain.exponentialRampToValueAtTime(amp * p[1], at + 0.006);
-      g.gain.exponentialRampToValueAtTime(0.0001, at + dur * (p[0] === 1 ? 1 : 0.6));
-      o.connect(g);
-      g.connect(dest);
-      o.start(at);
-      o.stop(at + dur + 0.05);
-    });
-  }
-
-  /* 멜로디 한 번. until(초)을 주면 그 시점까지만 잘라 울린다(앞소절 미리듣기) */
-  function playMelody(until, scale) {
-    var ctx = ready.ctx;
-    if (!ctx || !SOUND.input) return false;
-    var s = typeof scale === 'number' ? scale : 1;
-    var dest = liveGain();
-    var t0 = ctx.currentTime + 0.04;
-    MELODY.forEach(function (n) {
-      if (until && n.t >= until) return;
-      var dur = Math.min(n.d, (until || 99) - n.t);
-      if (dur < 0.04) return;
-      var amp = ALARM.note * n.v * s;
-      brassVoice(dest, n.f, t0 + n.t, dur, amp);
-      if (n.chord) {
-        n.chord.forEach(function (f) { brassVoice(dest, f, t0 + n.t, dur, amp * 0.45); });
-      }
-      if (n.bell) bellVoice(dest, n.f * 2, t0 + n.t, Math.max(0.35, dur), ALARM.note * s * 0.30);
-    });
-    return true;
   }
 
   /* 오디오 잠금이 풀렸는지 확인하고 소리를 낸다(첫 터치·일시 중단 복귀) */
@@ -1367,8 +1408,9 @@
     return true;
   }
 
-  /* 울리던 소리를 곧바로 멈춘다 — 예약해 둔 음까지 끊는다 */
+  /* 울리던 소리를 곧바로 멈춘다 — 재생 중인 음원과 폴백까지 끊는다 */
   function cutSound() {
+    stopBellElement();
     var ctx = ready.ctx;
     if (!ctx || !SOUND.live.length) return;
     var t = ctx.currentTime;
@@ -1376,14 +1418,15 @@
     SOUND.live = [];
     cut.forEach(function (g) {
       try {
+        var v = g.gain.value;
         g.gain.cancelScheduledValues(t);
-        g.gain.setValueAtTime(g.gain.value, t);
-        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.08);
+        g.gain.setValueAtTime(v > 0.0001 ? v : 0.0001, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
       } catch (e) {}
     });
     setTimeout(function () {
       cut.forEach(function (g) { try { g.disconnect(); } catch (e) {} });
-    }, 200);
+    }, 150);
   }
 
   function vibrate() {
@@ -1421,14 +1464,19 @@
     ready.timer = setInterval(function () {
       ready.beats++;
       ringOnce();
-    }, RING_EVERY);
+    }, bellPeriodMs());
     requestWake();
     renderReady();
   }
 
-  /* 알람 한 번 — 도착 멜로디 + 진동 */
+  /* 알람 한 번 — 도착 벨 음원 한 판 + 진동.
+     아직 디코딩 전이면 <audio>로 먼저 울리고, 다음 차례부터는 음원을 쓴다. */
   function ringOnce() {
-    playNow(function () { playMelody(0, 1); });
+    playNow(function () {
+      if (playBell({})) return;
+      decodeBell(ready.ctx);
+      playBellElement({});
+    });
     vibrate();
   }
 
@@ -1438,7 +1486,7 @@
       ready.ringing = false;
       ready.latched = true;
     }
-    cutSound(); // 멜로디가 길어졌으니 끄는 즉시 예약된 음까지 끊는다
+    cutSound(); // 재생 중인 음원·폴백을 끄는 즉시 끊는다
     if (el.alarmBanner) el.alarmBanner.classList.add('hidden');
     if (navigator.vibrate) { try { navigator.vibrate(0); } catch (e) {} }
     renderReady();
@@ -1462,10 +1510,21 @@
     var ok = unlockAudio();
     requestWake();
     renderReady();
-    showToast(ok ? '준비 완료 · 지금 출발!이 되면 도착 멜로디가 울려요' : '이 브라우저는 벨소리를 재생할 수 없어요');
+    showToast(ok ? '준비 완료 · 지금 출발!이 되면 도착 벨소리가 울려요' : '이 브라우저는 벨소리를 재생할 수 없어요');
     renderLive(); // 이미 '지금 출발!'이면 바로 울린다
-    // 아직 울릴 때가 아니라면 바뀐 멜로디·볼륨을 앞소절로 들려 바로 체감하게 한다
-    if (ok && !ready.ringing) playNow(function () { playMelody(INTRO_SEC, 0.95); });
+    // 아직 울릴 때가 아니라면 새 벨소리 앞부분을 짧게 들려 바로 확인하게 한다
+    if (ok && !ready.ringing) playIntro();
+    prefetchBell();
+  }
+
+  /* 준비하기 직후 새 벨소리를 앞부분만 페이드아웃하며 들려준다 */
+  function playIntro() {
+    playNow(function () {
+      if (playBell({ until: INTRO_SEC, gain: 0.95 })) return;
+      decodeBell(ready.ctx).then(function (buf) {
+        if (buf && ready.armed && !ready.ringing) playBell({ until: INTRO_SEC, gain: 0.95 });
+      });
+    });
   }
 
   function disarmReady(silent) {
@@ -1564,8 +1623,16 @@
     var ok = unlockAudio();
     if (!ok) { showToast('이 브라우저는 벨소리를 재생할 수 없어요'); return; }
     cutSound();
-    playNow(function () { playMelody(0, 1); });
-    showToast('도착 멜로디 미리듣기');
+    prefetchBell();
+    playNow(function () {
+      if (playBell({})) return;
+      // 디코딩이 끝나기 전에는 <audio>로 먼저 들려주고, 그게 안 될 때만 음원으로
+      var played = playBellElement({});
+      decodeBell(ready.ctx).then(function (buf) {
+        if (buf && !played) playBell({});
+      });
+    });
+    showToast('도착 벨소리 미리듣기');
   }
 
   function stepWalk(delta) {

@@ -6,7 +6,7 @@
      예전 내용이 남아 있어, 버전만 올리면 새 캐시에 예전 파일이 들어간다.
      쿼리를 바꾸면 캐시 키가 달라져 항상 새로 받는다.
      (화면은 ignoreSearch 로 캐시를 찾으므로 쿼리 유무는 상관없다) */
-const VERSION = '19';
+const VERSION = '20';
 const CACHE = 'subway1-radar-v' + VERSION;
 const FILES = [
   './',
@@ -14,6 +14,7 @@ const FILES = [
   './style.css',
   './app.js',
   './stations.js',
+  './assets/arrival-bell.mp3',
   './manifest.json',
   './icons/icon-192-v2.png',
   './icons/icon-512-v2.png',
