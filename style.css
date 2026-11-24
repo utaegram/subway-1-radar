@@ -404,6 +404,18 @@ main { padding: 8px 12px 0; display: flex; flex-direction: column; gap: 8px; }
 .verdict-card[data-kind="miss"] .v-title { color: #FFAE94; text-shadow: 0 0 12px rgba(255, 140, 100, .28); }
 .verdict-card[data-kind="none"] .v-title { color: #B4C8DB; font-size: 19px; }
 
+/* 탑승 중: 전면 판정 카드가 '내 열차' 카드가 된다 */
+.verdict-card[data-kind="board"] .v-title { color: #9FE0FF; text-shadow: 0 0 12px rgba(120, 205, 255, .35); }
+.verdict-card[data-kind="board-wait"] .v-title { color: #D6E6F7; text-shadow: 0 0 10px rgba(150, 195, 235, .24); }
+.verdict-card[data-kind="board-next"] .v-title { color: #74F5B4; text-shadow: 0 0 14px rgba(80, 240, 170, .42); }
+.verdict-card[data-kind="board-done"] .v-title { color: #FFD166; text-shadow: 0 0 15px rgba(255, 200, 90, .48); }
+
+.verdict-card.is-boarding .v-title { font-size: 18px; letter-spacing: -.5px; }
+.verdict-card.is-boarding .v-stat-val { font-size: 15px; letter-spacing: -.3px; }
+.verdict-card.is-boarding .v-info { margin-top: 5px; gap: 5px; }
+.verdict-card.is-boarding .v-stat { padding: 3px 7px 4px; }
+.verdict-card.is-boarding .walk-col { display: none; }
+
 /* 정보는 딱 두 개: 현재시각 · 열차출발 */
 .v-info {
   display: flex;
@@ -571,6 +583,80 @@ main { padding: 8px 12px 0; display: flex; flex-direction: column; gap: 8px; }
   82% { transform: rotate(11deg); }
   88% { transform: rotate(-7deg); }
   94% { transform: rotate(4deg); }
+}
+
+/* 탑승 중 우측 컨트롤: 하차 알림 토글 + 하차 */
+.board-ctl {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.board-bell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, .3);
+  background: rgba(255, 255, 255, .1);
+  color: #EAF3FF;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: -.3px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background .15s, color .15s, border-color .15s, box-shadow .15s;
+}
+
+.board-bell .bb-ico { font-size: 11px; line-height: 1; }
+
+.board-bell.is-on {
+  background: #FFC857;
+  border-color: #FFDA96;
+  color: #241A08;
+  box-shadow: 0 0 0 3px rgba(255, 200, 87, .18), 0 0 14px rgba(255, 190, 70, .4);
+}
+
+.board-bell.is-on .bb-ico { animation: bellPulse 1.8s ease-in-out infinite; }
+
+.board-off {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  height: 37px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: #FFFFFF;
+  color: #B3261E;
+  font-size: 13.5px;
+  font-weight: 900;
+  letter-spacing: -.3px;
+  line-height: 1.1;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+  box-shadow: 0 2px 6px rgba(0, 20, 45, .3), inset 0 -1px 0 rgba(10, 60, 110, .12);
+}
+
+.board-off:active { background: #FFE3DC; }
+
+.board-off .bo-sub {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: #8496AA;
 }
 
 /* 출발 알람 배너 */
@@ -752,6 +838,49 @@ main { padding: 8px 12px 0; display: flex; flex-direction: column; gap: 8px; }
 .t-node.no-label .t-name,
 .t-node.no-label .t-sub { display: none; }
 
+/* 생략 구간(⋯) */
+.t-node.is-gap .t-dot {
+  background: transparent;
+  border: 1px dashed rgba(255, 255, 255, .55);
+  box-shadow: none;
+}
+.t-node.is-gap .t-name { color: rgba(206, 228, 250, .6); letter-spacing: 1px; }
+
+/* 내가 탄 열차 강조 핀 */
+.t-me {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  transition: left .9s linear;
+}
+
+.t-me-body {
+  height: 19px;
+  padding: 0 8px;
+  border-radius: 7px;
+  background: #FFC857;
+  color: #241A08;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: -.2px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  white-space: nowrap;
+  box-shadow: 0 3px 9px rgba(0, 18, 40, .5), 0 0 0 1.5px #FFFFFF;
+}
+
+.t-me-stem {
+  width: 2px;
+  height: 7px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, .78);
+}
+
 .t-train {
   position: absolute;
   transform: translate(-50%, -50%);
@@ -814,6 +943,7 @@ main { padding: 8px 12px 0; display: flex; flex-direction: column; gap: 8px; }
 .lg-train { background: #FFFFFF; }
 .lg-arrive { background: #6BF2AE; }
 .lg-exp { background: #FF8A5C; }
+.lg-me { background: #FFC857; }
 
 /* ── 다가오는 열차: 승강장 LED 전광판 ─────────────── */
 .train-section {
@@ -886,9 +1016,9 @@ main { padding: 8px 12px 0; display: flex; flex-direction: column; gap: 8px; }
 .tcard {
   position: relative;
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr) auto;
+  grid-template-columns: 46px minmax(0, 1fr) auto auto;
   grid-template-rows: auto auto;
-  gap: 0 8px;
+  gap: 0 7px;
   align-items: center;
   padding: 6px 6px 6px 9px;
   background: transparent;
@@ -896,7 +1026,12 @@ main { padding: 8px 12px 0; display: flex; flex-direction: column; gap: 8px; }
   border-bottom: 1px solid rgba(255, 255, 255, .075);
   border-radius: 0;
   box-shadow: none;
+  cursor: pointer;
 }
+
+.tcard:active { background: rgba(255, 255, 255, .04); }
+
+.tcard.is-boarded { background: rgba(255, 200, 87, .07); }
 
 .tcard:last-child { border-bottom: 0; }
 
@@ -985,6 +1120,37 @@ main { padding: 8px 12px 0; display: flex; flex-direction: column; gap: 8px; }
 
 .tcard[data-state="miss"] .tcard-arr { color: rgba(186, 204, 222, .5); }
 
+/* 행 오른쪽: [탑승] */
+.tcard-board {
+  grid-column: 4;
+  grid-row: 1 / span 2;
+  justify-self: end;
+  align-self: center;
+  min-width: 40px;
+  height: 30px;
+  padding: 0 7px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 210, 130, .4);
+  background: rgba(255, 200, 87, .12);
+  color: #FFC24D;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: -.2px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background .15s, color .15s;
+}
+
+.tcard-board:active { background: #FFC857; color: #241A08; }
+
+.tcard-board.is-on {
+  background: #FFC857;
+  border-color: #FFDA96;
+  color: #241A08;
+}
+
 .st-go { background: rgba(76, 239, 162, .13); color: #63F7B0; box-shadow: inset 0 0 0 1px rgba(99, 247, 176, .34); }
 .st-wait { background: rgba(255, 180, 59, .13); color: #FFC24D; box-shadow: inset 0 0 0 1px rgba(255, 194, 77, .3); }
 .st-miss { background: rgba(255, 255, 255, .06); color: #A6B9CC; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12); }
@@ -1003,6 +1169,7 @@ main { padding: 8px 12px 0; display: flex; flex-direction: column; gap: 8px; }
 }
 
 .tcard-src > span { flex: none; }
+.tcard-src > .tcard-loc { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tcard-src > span:not(.src-chip):not(.tcard-loc) { white-space: nowrap; }
 
 .src-chip {
@@ -1040,6 +1207,100 @@ main { padding: 8px 12px 0; display: flex; flex-direction: column; gap: 8px; }
 }
 
 .filter-note b { color: #FFC24D; font-weight: 800; }
+
+/* ── 탑승 중: 내가 탄 열차 카드 ─────────────────────── */
+.board-card {
+  padding: 10px 12px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.board-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.board-card-head h2 {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: -.2px;
+  color: var(--text);
+}
+
+.board-off-mini {
+  height: 29px;
+  padding: 0 11px;
+  border-radius: 9px;
+  border: 1px solid #F3C9C1;
+  background: #FDEDEA;
+  color: #B3261E;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: -.2px;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.board-off-mini:active { background: #FBDCD5; }
+
+.board-train-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.bt-no {
+  font-size: 14.5px;
+  font-weight: 900;
+  letter-spacing: -.3px;
+  color: var(--line);
+  font-variant-numeric: tabular-nums;
+}
+
+.bt-dest { font-size: 13.5px; font-weight: 800; letter-spacing: -.2px; color: var(--text); }
+
+.bt-arr {
+  margin-left: auto;
+  font-size: 10.5px;
+  font-weight: 800;
+  color: var(--go);
+  background: var(--go-soft);
+  border-radius: 999px;
+  padding: 2px 9px;
+  white-space: nowrap;
+}
+
+.board-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.bs {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  padding: 5px 8px 6px;
+  border-radius: 10px;
+  background: var(--card-2);
+  border: 1px solid var(--line-border);
+}
+
+.bs-label { font-size: 9.5px; font-weight: 800; letter-spacing: -.1px; color: var(--muted); white-space: nowrap; }
+.bs-val { font-size: 14px; font-weight: 900; letter-spacing: -.4px; color: var(--text); white-space: nowrap; }
+
+.board-note {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--muted);
+  word-break: keep-all;
+}
 
 /* ── 상태 카드 ─────────────────────────────────────── */
 .status-card { padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; }

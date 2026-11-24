@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<meta name="app-version" content="22">
+<meta name="app-version" content="23">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0052A4">
 <meta name="description" content="수도권 전철 1호선 출발역·도착역을 고르면 지금 나갈 시각과 실제 승강장 도착 벨소리까지 알려 주는 앱">
@@ -70,7 +70,7 @@
           <div class="v-body" id="verdictBody">
             <div class="verdict-skeleton">불러오는 중…</div>
           </div>
-          <div class="walk-col">
+          <div class="walk-col" id="walkCol">
             <div class="walk-compact">
               <span class="wc-label">이동 &#183; 역까지</span>
               <div class="wc-row">
@@ -83,6 +83,13 @@
               <span class="rb-ico" aria-hidden="true">🔔</span><span class="rb-txt">준비하기</span>
             </button>
             <button id="readyTest" class="ready-test hidden" type="button">미리듣기</button>
+          </div>
+          <!-- 탑승 중: 준비하기 자리에 하차 · 하차 알림 -->
+          <div class="board-ctl hidden" id="boardCtl">
+            <button id="boardBellBtn" class="board-bell" type="button" aria-pressed="false">
+              <span class="bb-ico" aria-hidden="true">🔔</span><span class="bb-txt">하차 알림</span>
+            </button>
+            <button id="boardOffBtn" class="board-off" type="button">하차<span class="bo-sub">탑승 종료</span></button>
           </div>
           <p class="ready-hint hidden" id="readyHint">화면을 켜 두면 출발 시각에 벨소리가 울려요</p>
         </section>
@@ -100,7 +107,7 @@
         <div class="track" id="track">
           <div class="track-empty">열차 위치를 그리는 중…</div>
         </div>
-        <div class="track-legend">
+        <div class="track-legend" id="trackLegend">
           <span><i class="lg lg-here"></i>출발역</span>
           <span><i class="lg lg-train"></i>열차</span>
           <span><i class="lg lg-arrive"></i>도착·진입</span>
@@ -110,7 +117,7 @@
     </div>
 
     <!-- 다가오는 열차: 승강장 LED 전광판 -->
-    <section class="train-section">
+    <section class="train-section" id="trainSection">
       <div class="card-head">
         <h2>다가오는 열차</h2>
         <span class="muted" id="trainCount"></span>
@@ -119,6 +126,26 @@
       <p id="filterNote" class="filter-note hidden"></p>
       <p id="expNote" class="filter-note hidden"></p>
       <div id="trainEmpty" class="card empty hidden"></div>
+    </section>
+
+    <!-- 탑승 중: 내가 탄 열차 정보 -->
+    <section class="card board-card hidden" id="boardCard" aria-live="polite">
+      <div class="board-card-head">
+        <h2>탑승 중인 열차</h2>
+        <button id="boardOffBtn2" class="board-off-mini" type="button">하차</button>
+      </div>
+      <div class="board-train-row">
+        <span class="bt-no" id="boardTrainNo">#0000</span>
+        <span class="bt-dest" id="boardTrainDest">행</span>
+        <span class="pill pill-normal" id="boardTrainType">일반</span>
+        <span class="bt-arr" id="boardTrainArr">하차</span>
+      </div>
+      <div class="board-stats">
+        <div class="bs"><span class="bs-label">남은 정거장</span><b class="bs-val" id="boardStops">–</b></div>
+        <div class="bs"><span class="bs-label">남은 시간</span><b class="bs-val" id="boardEta">–</b></div>
+        <div class="bs"><span class="bs-label">도착 예정</span><b class="bs-val" id="boardArrAt">–</b></div>
+      </div>
+      <p class="board-note" id="boardNote"></p>
     </section>
 
     <section class="card status-card">
@@ -215,7 +242,7 @@
 <div class="alarm-banner hidden" id="alarmBanner" role="alert">
   <span class="ab-ico" aria-hidden="true">🔔</span>
   <div class="ab-text">
-    <strong>지금 출발!</strong>
+    <strong id="alarmTitle">지금 출발!</strong>
     <span id="alarmSub"></span>
   </div>
   <button id="alarmStop" class="ab-stop" type="button">알람 끄기</button>

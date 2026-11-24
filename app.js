@@ -39,6 +39,7 @@
     tab: 'down',
     data: { up: [], down: [] },
     meta: { mode: 'demo', fetchedAt: 0, error: '', lastTrainsAt: 0, positions: 0, added: 0 },
+    pos: [],          // 마지막으로 받은 1호선 전체 열차 위치(탑승 중 추적에 쓴다)
     countdown: REFRESH_SEC,
     loading: false,
     ticker: null
@@ -62,6 +63,10 @@
   /* 즐겨찾기 역(★) — 역 선택 목록 맨 위에 고정 */
   var LS_FAV = 'subway1.favorites.v1';
   var FAV = loadFavorites();
+
+  /* 탑승 중 모드 — 내가 탄 열차와 하차역, 하차 알림 설정을 담는다 */
+  var LS_BOARD = 'subway1.boarding.v1';
+  var B = loadBoarding();
 
   /* ── 저장소 ────────────────────────────────────────── */
   function loadSettings() {
@@ -116,6 +121,79 @@
 
   function saveFavorites() {
     try { localStorage.setItem(LS_FAV, JSON.stringify(FAV)); } catch (e) {}
+  }
+
+  /* ── 탑승 상태 저장소 ──────────────────────────────── */
+  function blankBoarding() {
+    return {
+      active: false,
+      trainNo: '',
+      dest: '',
+      express: false,
+      itx: false,
+      dir: 'down',
+      dep: '',
+      arr: '',
+      since: 0,
+      bell: true,     // 하차 알림(1정거장 전 벨+진동) 기본 켜짐
+      pos: null,      // 마지막으로 확인한 내 열차 위치
+      etaAt: 0,       // 도착 예정 시각(epoch ms)
+      seenAt: 0       // 마지막으로 실시간 위치에서 찾은 시각(메모리 전용)
+    };
+  }
+
+  function loadBoarding() {
+    var b = blankBoarding();
+    var raw = null;
+    try { raw = localStorage.getItem(LS_BOARD); } catch (e) { raw = null; }
+    if (!raw) return b;
+    try {
+      var p = JSON.parse(raw);
+      if (!p || !p.active) return b;
+      var dep = D.normalize(p.dep);
+      var arr = D.normalize(p.arr);
+      if (!D.isStation(dep) || !D.isStation(arr) || dep === arr) return b;
+      b.active = true;
+      b.trainNo = String(p.trainNo || '');
+      b.dest = D.normalize(p.dest) || arr;
+      b.express = !!p.express;
+      b.itx = !!p.itx;
+      b.dir = p.dir === 'up' ? 'up' : 'down';
+      b.dep = dep;
+      b.arr = arr;
+      b.since = +p.since || Date.now();
+      b.bell = p.bell !== false;
+      b.etaAt = +p.etaAt || 0;
+      if (p.pos && p.pos.station) {
+        b.pos = {
+          station: apiStation(p.pos.station),
+          raw: String(p.pos.raw || p.pos.station || ''),
+          sttus: String(p.pos.sttus == null ? '' : p.pos.sttus),
+          at: +p.pos.at || 0
+        };
+      }
+    } catch (e) { return blankBoarding(); }
+    return b;
+  }
+
+  function saveBoarding() {
+    try {
+      if (!B.active) { localStorage.removeItem(LS_BOARD); return; }
+      localStorage.setItem(LS_BOARD, JSON.stringify({
+        active: true,
+        trainNo: B.trainNo,
+        dest: B.dest,
+        express: B.express,
+        itx: B.itx,
+        dir: B.dir,
+        dep: B.dep,
+        arr: B.arr,
+        since: B.since,
+        bell: B.bell,
+        pos: B.pos,
+        etaAt: B.etaAt
+      }));
+    } catch (e) {}
   }
 
   function isFav(name) {
@@ -694,6 +772,7 @@
 
     if (mode === 'demo' || (mode === 'key' && !S.s.key) || (mode === 'proxy' && !S.s.proxy)) {
       S.data = bucket(buildDemo(dep, arr).map(function (r) { return routeTrain(r, dep, arr); }));
+      S.pos = [];
       S.meta = { mode: 'demo', fetchedAt: Date.now(), error: '', lastTrainsAt: Date.now(), positions: 0, added: 0 };
       S.loading = false;
       renderAll();
@@ -719,6 +798,7 @@
       applyPositions(trains, positions, dep, arr);
       var added = supplementTrains(trains, dep, arr, positions);
       S.data = bucket(trains);
+      S.pos = positions;   // 탑승 중인 열차 추적에도 같은 목록을 쓴다
       S.meta = {
         mode: 'live', fetchedAt: Date.now(), error: '', lastTrainsAt: Date.now(),
         positions: positions.length, added: added
@@ -874,13 +954,28 @@
     var view = visibleRows();
     var rows = judgeTrains(view.kept, S.s.walk, now);
     var v = verdictFor(rows, S.s.walk, view);
+    var boarding = B.active ? boardMetrics(now) : null;
 
-    renderVerdict(v, now);
-    renderTrack(rows);
-    renderTrainList(rows, view, now);
+    if (boarding) {
+      renderBoarding(boarding, now);
+      renderBoardTrack(boarding);
+      renderBoardCard(boarding, now);
+      maybeBoardAlarm(boarding);
+      el.trainSection.classList.add('hidden');
+      el.boardCard.classList.remove('hidden');
+    } else {
+      renderVerdict(v, now);
+      renderTrack(rows);
+      renderTrainList(rows, view, now);
+      renderReady();
+      maybeAlarm(v);
+      el.boardCtl.classList.add('hidden');
+      el.walkCol.classList.remove('hidden');
+      el.boardCard.classList.add('hidden');
+      el.trainSection.classList.remove('hidden');
+    }
+
     renderStatus(now);
-    renderReady();
-    maybeAlarm(v);
 
     if (S.s.auto) {
       el.countdown.textContent = Math.max(0, S.countdown) + '초 뒤 갱신';
@@ -889,10 +984,16 @@
     }
     el.modeBadge.className = 'badge ' + (S.meta.mode === 'demo' ? 'badge-demo' : 'badge-live');
     el.modeBadge.textContent = S.meta.mode === 'demo' ? '데모' : 'LIVE';
-    el.modeText.textContent = S.meta.mode === 'demo' ? '데모 모드 · 시뮬레이션' : '실시간 데이터';
+    el.modeText.textContent = boarding
+      ? '탑승 중 · ' + stationLabel(B.arr) + ' 하차'
+      : (S.meta.mode === 'demo' ? '데모 모드 · 시뮬레이션' : '실시간 데이터');
   }
 
   function renderVerdict(v, now) {
+    if (el.verdictCard.classList.contains('is-boarding')) {
+      el.verdictCard.classList.remove('is-boarding');
+      el.verdictCard.setAttribute('data-kind', '');
+    }
     var icon = v.kind === 'go' ? '🏃' : v.kind === 'wait' ? '⏳' : v.kind === 'miss' ? '😵‍💫' : '🚉';
     var departAt = v.best && v.best.eta != null ? now + v.best.eta * 1000 : null;
 
@@ -911,6 +1012,8 @@
   }
 
   function renderTrack(rows) {
+    if (B.active) return;   // 탑승 중에는 renderBoardTrack 이 그린다
+    setTrackLegend('normal');
     var dep = S.s.dep;
     var arr = S.s.arr;
     var incoming = D.incomingSide(dep, arr, 3);
@@ -1041,6 +1144,7 @@
     var shown = 0;
     var visible = rows.slice(0, LIST_MAX);
     var hasExpress = false;
+    var myNo = B.active ? normNo(B.trainNo) : '';
 
     visible.forEach(function (r) {
       var t = r.t;
@@ -1061,8 +1165,11 @@
       else loc = t.msg2 ? t.msg2 : '위치 확인 중';
 
       var reachPill = t.reaches === null && !t.dest ? '<span class="pill pill-normal">행선지 미상</span>' : '';
+      var mine = !!myNo && normNo(t.trainNo) === myNo;
 
-      html += '<article class="tcard" data-state="' + (r.eta == null ? 'none' : r.kind) + '">' +
+      html += '<article class="tcard' + (mine ? ' is-boarded' : '') + '" data-state="' + (r.eta == null ? 'none' : r.kind) + '"' +
+        ' data-train="' + esc(t.trainNo) + '" role="button" tabindex="0"' +
+        ' aria-label="' + esc((t.dest || '') + '행 열차에 탑승') + '">' +
         '<div class="tcard-eta' + (r.eta != null && r.eta < 45 ? ' is-now' : '') + '"><b>' + etaTxt + '</b><span>' + etaUnit + '</span></div>' +
         '<div class="tcard-main">' +
         '<div class="tcard-dest"><span class="tdest">' + esc(t.dest || '행선지 미상') + '<span class="to">행</span></span>' + typePill + lastPill + reachPill + '</div>' +
@@ -1071,6 +1178,8 @@
         '<span class="tcard-status ' + st.cls + '">' + st.dep + '</span>' +
         '<span class="tcard-arr">' + st.arr + '</span>' +
         '</div>' +
+        '<button class="tcard-board' + (mine ? ' is-on' : '') + '" type="button" data-board="' + esc(t.trainNo) + '"' +
+        ' aria-label="' + esc((t.dest || '') + '행 열차에 탑승') + '">' + (mine ? '탑승 중' : '탑승') + '</button>' +
         '<div class="tcard-src"><span class="tcard-loc">' + esc(loc) + '</span>' +
         '<span class="src-chip">' + esc(sourceChip(t)) + '</span>' +
         (t.trainNo ? '<span>#' + esc(t.trainNo) + '</span>' : '') +
@@ -1447,7 +1556,7 @@
 
   function requestWake() {
     if (!navigator.wakeLock || ready.wake) return;
-    if (!ready.armed && !ready.ringing) return;
+    if (!ready.armed && !ready.ringing && !(B.active && B.bell)) return;
     try {
       navigator.wakeLock.request('screen').then(function (sentinel) {
         ready.wake = sentinel;
@@ -1462,12 +1571,13 @@
     ready.wake = null;
   }
 
-  function startRing(v) {
+  function startRing(v, titleText) {
     if (ready.ringing) return;
     ready.ringing = true;
     ready.latched = true;
     ready.beats = 0;
     if (!ready.ctx) unlockAudio();
+    if (el.alarmTitle) el.alarmTitle.textContent = titleText || '지금 출발!';
     if (el.alarmSub) el.alarmSub.textContent = (v && v.sub) ? v.sub : (S.s.arr + '까지 갈 열차가 곧 도착해요');
     if (el.alarmBanner) el.alarmBanner.classList.remove('hidden');
     ringOnce();
@@ -1558,6 +1668,446 @@
     el.readyHint.classList.toggle('hidden', !ready.armed);
   }
 
+  /* ── 탑승 중 모드 ──────────────────────────────────────
+     다가오는 열차의 [탑승]을 누르면 그 열차(trainNo)와 하차역을 기억하고,
+     실시간 열차 위치(realtimePosition)에서 같은 열차번호를 찾아
+     지금 어느 역을 지나는지 · 하차역까지 몇 정거장/몇 분 남았는지를 그린다.
+     선택 상태는 localStorage(subway1.boarding.v1)에 남겨 앱을 닫았다
+     다시 열어도 이어진다.
+     ─────────────────────────────────────────────────── */
+
+  /* 열차번호 정규화 — API 는 "0202", 목록은 "202" 처럼 앞자리 0 이 들쭉날쭉하다 */
+  function normNo(no) {
+    var s = String(no == null ? '' : no).replace(/\s+/g, '');
+    return s.replace(/^0+/, '') || s;
+  }
+
+  function findBoardPosition() {
+    var want = normNo(B.trainNo);
+    if (!want) return null;
+    var list = S.pos || [];
+    for (var i = 0; i < list.length; i++) {
+      if (normNo(list[i].trainNo) === want) return list[i];
+    }
+    return null;
+  }
+
+  function findTrainByNo(no) {
+    var want = normNo(no);
+    var all = (S.data.up || []).concat(S.data.down || []);
+    for (var i = 0; i < all.length; i++) {
+      if (normNo(all[i].trainNo) === want) return all[i];
+    }
+    return null;
+  }
+
+  /* 현재역 + 상태(진입/도착/출발)로 남은 정거장 · 예상 시간을 계산한다 */
+  function metricsFromPos(station, sttus) {
+    var out = { station: station || '', sttus: sttus || '', remaining: null, etaMin: null, pinMin: 0, at: 0, stale: null };
+    var n = station && D.isStation(station) ? D.normalize(station) : '';
+    if (!n) return out;
+    var arr = D.normalize(B.arr);
+    var stops = D.stopsBetween(n, arr);
+    var mins = D.minutesBetween(n, arr);
+    if (stops == null || mins == null) return out;
+    if (n === arr) {
+      out.remaining = 0;
+      out.etaMin = 0;
+      return out;
+    }
+    var remain = stops;
+    var m = mins;
+    if (sttus === '0') { remain += 1; m += 1.4; out.pinMin = -0.35; }        // 다음 역 진입 중 — 그 역에 아직 닿지 않음
+    else if (sttus === '1') { m -= 0.15; }                                    // 역에 도착
+    else if (sttus === '2' || sttus === '3') { m -= 0.5; out.pinMin = 0.35; } // 막 출발
+    else { m -= 0.2; }
+    if (B.express) m = m * 0.85;
+    out.remaining = Math.max(0, remain);
+    out.etaMin = Math.max(0, m);
+    return out;
+  }
+
+  /* 데모: 탑승 시각부터 출발역 → 하차역 구간을 실제 시간에 맞춰 달린다 */
+  function demoBoardFix(now) {
+    var path = D.pathBetween(B.dep, B.arr);
+    if (!path || path.length < 2) path = [B.dep, B.arr];
+    var cum = [0];
+    for (var i = 1; i < path.length; i++) {
+      var seg = D.minutesBetween(path[i - 1], path[i]);
+      cum.push(cum[i - 1] + (seg == null ? 2 : seg));
+    }
+    var total = cum[cum.length - 1];
+    var mins = Math.max(0, (now - B.since) / 60000);
+    var out = {
+      station: path[0], sttus: '2', remaining: path.length - 1,
+      etaMin: Math.max(0, total - mins), pinMin: 0, at: now, stale: 0
+    };
+    if (mins >= total) {
+      out.station = path[path.length - 1];
+      out.sttus = '1';
+      out.remaining = 0;
+      out.etaMin = 0;
+      out.arrived = true;
+      return out;
+    }
+    for (var k = 0; k < path.length - 1; k++) {
+      if (mins >= cum[k] && mins < cum[k + 1]) {
+        out.station = path[k];
+        out.remaining = path.length - 1 - k;
+        out.pinMin = mins - cum[k];
+        out.sttus = (cum[k + 1] - mins) < 0.6 ? '0' : '2';
+        break;
+      }
+    }
+    return out;
+  }
+
+  function boardMetrics(now) {
+    var m;
+    // 아직 데이터를 한 번도 못 받았으면(앱을 막 연 경우) 위치를 짐작하지 않는다
+    if (!S.meta.fetchedAt) {
+      return {
+        station: '', sttus: '', remaining: null, etaMin: null, pinMin: 0, at: 0, stale: null,
+        etaAt: 0, remainMin: null, arrived: false, pending: true
+      };
+    }
+    if (S.meta.mode === 'demo') {
+      m = demoBoardFix(now);
+      B.seenAt = now;
+      B.etaAt = now + m.etaMin * 60000;
+    } else {
+      var p = findBoardPosition();
+      if (p) {
+        var st = apiStation(p.statnNm);
+        var sttus = String(p.trainSttus == null ? '' : p.trainSttus);
+        B.seenAt = now;
+        if (!B.pos || B.pos.station !== st || B.pos.sttus !== sttus) {
+          B.pos = { station: st, raw: String(p.statnNm || ''), sttus: sttus, at: now };
+          var fix = metricsFromPos(st, sttus);
+          if (fix.etaMin != null) B.etaAt = now + fix.etaMin * 60000;
+          saveBoarding();
+        }
+      }
+      m = metricsFromPos(B.pos ? B.pos.station : '', B.pos ? B.pos.sttus : '');
+      m.at = B.pos ? B.pos.at : 0;
+      m.stale = B.seenAt ? Math.max(0, (now - B.seenAt) / 1000) : null;
+      if (m.etaMin != null && !B.etaAt) B.etaAt = now + m.etaMin * 60000;
+    }
+    m.etaAt = (m.remaining == null) ? 0 : (B.etaAt || 0);
+    m.remainMin = m.remaining == null ? null
+      : (m.etaAt ? Math.max(0, (m.etaAt - now) / 60000) : m.etaMin);
+    m.arrived = m.remaining === 0 || (m.remaining != null && m.etaAt > 0 && now > m.etaAt + 90000);
+    m.notYet = beforeDeparture(m.station);
+    if (m.notYet) {
+      var d = D.stopsBetween(m.station, B.dep);
+      m.toDep = d == null ? null : d;
+    }
+    return m;
+  }
+
+  /* 아직 출발역(탑승역)에 오지 않은 열차 — 목록에서 미리 집어 든 경우 */
+  function beforeDeparture(station) {
+    if (!station || !D.isStation(station)) return false;
+    var n = D.normalize(station);
+    var full = D.pathBetween(B.dep, B.arr) || [];
+    if (full.indexOf(n) >= 0) return false;
+    return D.dirToward(B.dep, n) === (B.dir === 'up' ? 'down' : 'up');
+  }
+
+  function boardTitle(m) {
+    if (m.notYet) {
+      return '탑승 전 · ' + stationLabel(B.dep) +
+        (m.toDep != null ? '까지 ' + m.toDep + '개 역' : '으로 오는 중');
+    }
+    if (m.arrived) return (m.remaining === 0 && m.sttus === '0') ? '이번 역 하차!' : '도착했어요!';
+    if (m.remaining == null) return '탑승 중';
+    if (m.remaining <= 1) return '다음 역 하차!';
+    return '탑승 중 · ' + m.remaining + '개 역 남음';
+  }
+
+  function boardStateLabel(sttus) {
+    if (sttus === '0') return '진입';
+    if (sttus === '1') return '도착';
+    if (sttus === '2' || sttus === '3') return '출발';
+    return '운행 중';
+  }
+
+  function startBoarding(t) {
+    if (!t) return;
+    B.active = true;
+    B.trainNo = String(t.trainNo || '');
+    B.dest = D.normalize(t.dest || S.s.arr) || S.s.arr;
+    B.express = !!t.express;
+    B.itx = !!t.itx;
+    B.dep = S.s.dep;
+    B.arr = S.s.arr;
+    B.dir = D.dirToward(B.dep, B.arr) || routeDir();
+    B.since = Date.now();
+    B.pos = null;
+    B.etaAt = 0;
+    B.seenAt = 0;
+    ready.latched = false;
+    if (ready.ringing) stopRing(true);
+    saveBoarding();
+    if (B.bell) {
+      unlockAudio();
+      prefetchBell();
+      requestWake();
+    }
+    renderLive();
+    showToast(B.bell
+      ? stationLabel(B.arr) + ' 1정거장 전에 도착 벨로 알려 드릴게요'
+      : '탑승했어요 · 하차 알림은 꺼져 있어요');
+  }
+
+  function endBoarding(silent) {
+    if (!B.active) return;
+    B.active = false;
+    B.pos = null;
+    B.etaAt = 0;
+    B.seenAt = 0;
+    stopRing(true);
+    ready.latched = false;
+    if (!ready.armed) releaseWake();
+    saveBoarding();
+    el.verdictCard.classList.remove('is-boarding');
+    el.boardCtl.classList.add('hidden');
+    el.walkCol.classList.remove('hidden');
+    el.boardCard.classList.add('hidden');
+    el.trainSection.classList.remove('hidden');
+    renderLive();
+    if (!silent) showToast('하차했어요 · 다시 열차를 기다릴게요');
+  }
+
+  function toggleBoardBell() {
+    B.bell = !B.bell;
+    saveBoarding();
+    if (B.bell) {
+      var ok = unlockAudio();
+      prefetchBell();
+      requestWake();
+      showToast(ok ? '하차 알림을 켰어요 · 하차역 1정거장 전에 울려요' : '이 브라우저는 벨소리를 재생할 수 없어요');
+    } else {
+      stopRing(true);
+      ready.latched = false;
+      if (!ready.armed) releaseWake();
+      showToast('하차 알림을 껐어요');
+    }
+    renderLive();
+  }
+
+  /* 1정거장 전(또는 하차역 진입)에서 도착 벨 + 진동 */
+  function maybeBoardAlarm(m) {
+    if (!B.bell) {
+      if (ready.ringing) stopRing(true);
+      return;
+    }
+    // 마지막 위치 확인이 오래됐거나(앱을 나중에 다시 열었다) 아직 데이터가 없으면 울리지 않는다
+    if (m.pending || !m.at) return;
+    if (Date.now() - m.at > 5 * 60000) return;
+    if (m.notYet) return;   // 아직 타기 전(탑승역 전)에는 하차 알림을 울리지 않는다
+    var near = m.remaining != null && m.remaining <= 1;
+    if (near || m.arrived) {
+      if (!ready.ringing && !ready.latched) {
+        var atDest = m.remaining === 0;
+        startRing({
+          sub: stationLabel(B.arr) + (atDest ? ' 도착 · 지금 내리세요' : ' 1정거장 전 · 내릴 준비하세요')
+        }, atDest ? '이번 역 하차!' : '다음 역 하차!');
+      }
+    } else if (!ready.ringing) {
+      ready.latched = false;
+    }
+  }
+
+  function renderBoarding(m, now) {
+    var kind = m.notYet ? 'board-wait'
+      : m.arrived ? 'board-done'
+        : (m.remaining != null && m.remaining <= 1 ? 'board-next' : 'board');
+    var loc = m.station ? stationLabel(m.station) + ' ' + boardStateLabel(m.sttus) : '위치 확인 중';
+    var at = m.etaAt ? clock(m.etaAt) : '–';
+
+    el.verdictCard.classList.add('is-boarding');
+    el.verdictCard.setAttribute('data-kind', kind);
+    el.walkCol.classList.add('hidden');
+    el.boardCtl.classList.remove('hidden');
+    el.boardBellBtn.classList.toggle('is-on', !!B.bell);
+    el.boardBellBtn.setAttribute('aria-pressed', B.bell ? 'true' : 'false');
+    el.boardBellBtn.querySelector('.bb-txt').textContent = B.bell ? '알림 켜짐' : '하차 알림';
+
+    el.verdictBody.innerHTML =
+      '<div class="v-main"><div class="v-icon" aria-hidden="true">🚇</div>' +
+      '<div class="v-maintext"><h2 class="v-title">' + esc(boardTitle(m)) + '</h2></div></div>' +
+      '<div class="v-info">' +
+      '<div class="v-stat"><span class="v-stat-label">현재 위치</span>' +
+      '<b class="v-stat-val">' + esc(loc) + '</b></div>' +
+      '<div class="v-stat"><span class="v-stat-label">도착 예정</span>' +
+      '<b class="v-stat-val">' + esc(at) + '</b></div>' +
+      '</div>';
+  }
+
+  function renderBoardCard(m, now) {
+    el.boardTrainNo.textContent = B.trainNo ? '#' + B.trainNo : '#----';
+    el.boardTrainDest.textContent = (B.dest || B.arr) + '행';
+    el.boardTrainType.textContent = B.itx ? 'ITX' : (B.express ? '급행' : '일반');
+    el.boardTrainType.className = 'pill ' + (B.itx ? 'pill-itx' : (B.express ? 'pill-exp' : 'pill-normal'));
+    el.boardTrainArr.textContent = stationLabel(B.arr) + ' 하차';
+    el.boardStops.textContent = m.remaining == null ? '–' : m.remaining + '개';
+    el.boardEta.textContent = m.remainMin == null ? '–'
+      : (m.arrived ? '도착' : (m.remainMin < 1 ? '곧' : Math.round(m.remainMin) + '분'));
+    el.boardArrAt.textContent = m.etaAt ? clock(m.etaAt) : '–';
+
+    var notes = [];
+    if (B.since) notes.push('탑승 후 ' + Math.max(0, Math.round((now - B.since) / 60000)) + '분');
+    if (m.notYet) notes.push('아직 ' + stationLabel(B.dep) + ' 전');
+    if (S.meta.mode === 'demo') notes.push('데모 시뮬레이션');
+    else if (!B.pos) notes.push('실시간 위치를 찾는 중');
+    else if (m.stale != null && m.stale > 90) notes.push('위치 ' + clock(m.at) + ' 기준');
+    notes.push('🔔 하차 알림 ' + (B.bell ? '켜짐' : '꺼짐'));
+    el.boardNote.textContent = notes.join(' · ');
+  }
+
+  /* 탑승 트랙: 현재역(진입 중이면 바로 앞 역)부터 하차역까지.
+     구간이 길면 앞 4개 역 · ⋯ · 뒤 3개 역으로 잘라 한눈에 보이게 한다. */
+  function boardNodes(m) {
+    var arr = D.normalize(B.arr);
+    var full = D.pathBetween(B.dep, B.arr) || [];
+    var cur = m.station && D.isStation(m.station) ? D.normalize(m.station) : '';
+    var idx = cur ? full.indexOf(cur) : -1;
+
+    // 아직 탑승역 전이면 그 역에서 하차역까지의 경로로 그린다
+    if (cur && idx < 0) {
+      var via = D.pathBetween(cur, arr);
+      if (via && via.length >= 2) { full = via; idx = 0; }
+    }
+
+    if (full.length < 2 || idx < 0) {
+      var two = [{ name: m.station || B.dep, min: 0, here: true }];
+      var mm = D.minutesBetween(cur || B.dep, arr);
+      two.push({ name: arr, min: mm == null ? 3 : Math.max(0.5, mm), dest: true });
+      return { nodes: two, minMin: -0.7, maxMin: two[1].min, pin: 0 };
+    }
+
+    var cum = [0];
+    for (var i = 1; i < full.length; i++) {
+      var seg = D.minutesBetween(full[i - 1], full[i]);
+      cum.push(cum[i - 1] + (seg == null ? 2 : seg));
+    }
+
+    var last = full.length - 1;
+    var atEnd = !!cur && cur === arr;
+    // 진입 중이거나 하차역에 닿았으면 바로 앞 역부터 그려 '도착'이 한 눈에 보이게 한다
+    var start = (idx > 0 && (m.sttus === '0' || atEnd)) ? idx - 1 : idx;
+    var picks = [];
+    if (last - start + 1 <= 6) {
+      for (var j = start; j <= last; j++) picks.push({ i: j, min: cum[j] });
+    } else {
+      for (var h = 0; h < 3; h++) picks.push({ i: start + h, min: cum[start + h] });
+      picks.push({ i: -1, min: (cum[start + 2] + cum[last - 1]) / 2 });
+      for (var e = last - 1; e <= last; e++) picks.push({ i: e, min: cum[e] });
+    }
+
+    var nodes = picks.map(function (p) {
+      if (p.i < 0) return { gap: true, min: p.min };
+      var nm = full[p.i];
+      return {
+        name: nm, min: p.min,
+        here: !!cur && nm === cur,
+        dest: nm === arr,
+        board: m.notYet && nm === D.normalize(B.dep)
+      };
+    });
+
+    var pin = cum[idx] + (m.pinMin || 0);
+    var minMin = Math.min(cum[start], pin) - 0.7;
+    var maxMin = Math.max(cum[last], pin);
+    if (maxMin - minMin < 1) maxMin = minMin + 1;
+    return { nodes: nodes, minMin: minMin, maxMin: maxMin, pin: pin };
+  }
+
+  function renderBoardTrack(m) {
+    setTrackLegend('boarding');
+    var atEnd = m.station && D.isStation(m.station) && D.normalize(m.station) === D.normalize(B.arr);
+    el.trackCaption.textContent = m.pending
+      ? (B.dep + ' → ' + B.arr + ' · 하차')
+      : atEnd ? stationLabel(B.arr) + ' 도착'
+        : (m.station ? stationLabel(m.station) : '내 열차') + ' → ' + stationLabel(B.arr) + ' · 하차';
+
+    if (m.pending) {
+      el.track.innerHTML = '<div class="track-empty">내 열차 위치를 확인하는 중…</div>';
+      return;
+    }
+
+    var t = boardNodes(m);
+    if (!t.nodes.length) {
+      el.track.innerHTML = '<div class="track-empty">열차 위치를 그리는 중…</div>';
+      return;
+    }
+
+    var span = (t.maxMin - t.minMin) || 1;
+    function xOf(min) { return 8 + ((min - t.minMin) / span) * 84; }
+
+    var html = '<div class="track-rail"></div>';
+    var W = el.track.clientWidth || 360;
+    var spans = [];
+
+    // 이름표가 겹치면 점만 남기되, 현재역과 하차역은 먼저 자리를 잡아 항상 보이게 한다
+    function halfOf(n) {
+      var w = Math.max(String(n.name || '').length * 10.5, 22);
+      if (n.here) w = Math.max(w, 24);
+      if (n.dest) w = Math.max(w, 46);   // '🚩 하차역'
+      return (w + 8) * 50 / W;
+    }
+    t.nodes.slice().sort(function (a, b) {
+      function prio(n) { return n.here ? 0 : n.dest ? 1 : n.gap ? 3 : 2; }
+      return prio(a) - prio(b);
+    }).forEach(function (n) {
+      if (n.gap) return;
+      var x = xOf(n.min);
+      var h = halfOf(n);
+      var clash = spans.some(function (s) { return (x - h) < (s.r + 0.6) && (x + h) > (s.l - 0.6); });
+      if (clash) n.tight = true;
+      else spans.push({ l: x - h, r: x + h });
+    });
+
+    t.nodes.forEach(function (n) {
+      var x = xOf(n.min).toFixed(2);
+      if (n.gap) {
+        html += '<div class="t-node is-gap" style="left:' + x + '%">' +
+          '<span class="t-dot"></span><span class="t-name">⋯</span></div>';
+        return;
+      }
+      html += '<div class="t-node' + (n.here ? ' is-here' : '') + (n.dest ? ' is-dest' : '') +
+        (n.tight ? ' no-label' : '') + '" style="left:' + x + '%">' +
+        '<span class="t-dot"></span>' +
+        '<span class="t-name">' + esc(n.name) + '</span>' +
+        (n.here && !n.dest ? '<span class="t-sub">현재</span>' : '') +
+        (n.dest ? '<span class="t-sub">🚩 하차역</span>' : '') +
+        (n.board && !n.here ? '<span class="t-sub">탑승역</span>' : '') +
+        '</div>';
+    });
+
+    html += '<div class="t-me" style="left:' + xOf(t.pin).toFixed(2) + '%">' +
+      '<span class="t-me-body">내 열차</span>' +
+      '<span class="t-me-stem" aria-hidden="true"></span>' +
+      '</div>';
+
+    el.track.innerHTML = html;
+  }
+
+  function setTrackLegend(kind) {
+    if (!el.trackLegend) return;
+    if (el.trackLegend.getAttribute('data-kind') === kind) return;
+    el.trackLegend.setAttribute('data-kind', kind);
+    el.trackLegend.innerHTML = kind === 'boarding'
+      ? '<span><i class="lg lg-me"></i>내 열차</span>' +
+        '<span><i class="lg lg-here"></i>현재역</span>' +
+        '<span><i class="lg lg-arrive"></i>하차역</span>'
+      : '<span><i class="lg lg-here"></i>출발역</span>' +
+        '<span><i class="lg lg-train"></i>열차</span>' +
+        '<span><i class="lg lg-arrive"></i>도착·진입</span>' +
+        '<span><i class="lg lg-exp"></i>급행</span>';
+  }
+
   /* ── 이벤트 ────────────────────────────────────────── */
   function bind() {
     el.refreshBtn.addEventListener('click', function () {
@@ -1574,6 +2124,11 @@
     el.readyTest.addEventListener('click', previewBell);
     el.alarmStop.addEventListener('click', function () {
       stopRing(true);
+      if (B.active) {
+        ready.latched = true;
+        showToast('하차 알림을 멈췄어요');
+        return;
+      }
       disarmReady(true);
       showToast('알람을 끄고 준비를 마쳤어요');
     });
@@ -1604,6 +2159,27 @@
 
     el.stationSearch.addEventListener('input', function () { renderStationList(el.stationSearch.value); });
 
+    /* 다가오는 열차 카드 → 탑승 */
+    el.trainList.addEventListener('click', function (e) {
+      var card = e.target && e.target.closest ? e.target.closest('.tcard') : null;
+      if (!card) return;
+      var t = findTrainByNo(card.getAttribute('data-train'));
+      if (t) startBoarding(t);
+    });
+    el.trainList.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      var card = e.target && e.target.closest ? e.target.closest('.tcard') : null;
+      if (!card) return;
+      e.preventDefault();
+      var t = findTrainByNo(card.getAttribute('data-train'));
+      if (t) startBoarding(t);
+    });
+
+    /* 탑승 중: 하차 · 하차 알림 */
+    el.boardOffBtn.addEventListener('click', function () { endBoarding(); });
+    el.boardOffBtn2.addEventListener('click', function () { endBoarding(); });
+    el.boardBellBtn.addEventListener('click', toggleBoardBell);
+
     el.saveBtn.addEventListener('click', saveSettingsFromSheet);
     el.testBtn.addEventListener('click', testConnection);
     el.bellTest.addEventListener('click', previewBell);
@@ -1614,13 +2190,13 @@
 
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) return;
-      if (ready.armed) { requestWake(); unlockAudio(); }
+      if (ready.armed || (B.active && B.bell)) { requestWake(); unlockAudio(); }
       if (S.s.auto && Date.now() - S.meta.fetchedAt > REFRESH_SEC * 1000) refresh();
     });
 
-    // 준비 중에는 아무 터치나 오디오 잠금 해제 계기로 쓴다
+    // 준비 중·탑승 중에는 아무 터치나 오디오 잠금 해제 계기로 쓴다
     document.addEventListener('pointerdown', function () {
-      if (ready.armed) unlockAudio();
+      if (ready.armed || (B.active && B.bell)) unlockAudio();
     }, true);
   }
 
@@ -1679,6 +2255,7 @@
 
   /* ── 출발역/도착역 바꾸기 ──────────────────────────── */
   function swapEnds(silent) {
+    if (B.active) endBoarding(true);
     var d = S.s.dep;
     S.s.dep = S.s.arr;
     S.s.arr = d;
@@ -1693,6 +2270,7 @@
   }
 
   function routeChanged() {
+    if (B.active) endBoarding(true);
     S.tab = D.dirToward(S.s.dep, S.s.arr) || 'down';
     stopRing(true);
     ready.latched = false;
@@ -1911,6 +2489,23 @@
       arrName: $('arrName'),
       verdictCard: $('verdictCard'),
       verdictBody: $('verdictBody'),
+      walkCol: $('walkCol'),
+      boardCtl: $('boardCtl'),
+      boardBellBtn: $('boardBellBtn'),
+      boardOffBtn: $('boardOffBtn'),
+      boardOffBtn2: $('boardOffBtn2'),
+      boardCard: $('boardCard'),
+      boardTrainNo: $('boardTrainNo'),
+      boardTrainDest: $('boardTrainDest'),
+      boardTrainType: $('boardTrainType'),
+      boardTrainArr: $('boardTrainArr'),
+      boardStops: $('boardStops'),
+      boardEta: $('boardEta'),
+      boardArrAt: $('boardArrAt'),
+      boardNote: $('boardNote'),
+      trainSection: $('trainSection'),
+      trackLegend: $('trackLegend'),
+      alarmTitle: $('alarmTitle'),
       walkValue: $('walkValue'),
       walkMinus: $('walkMinus'),
       walkPlus: $('walkPlus'),
@@ -1951,6 +2546,8 @@
     // 지난번에 준비하기를 켜 둔 상태라면 이어서 감시한다(소리는 첫 터치 뒤부터)
     ready.armed = !!S.s.ready;
     if (ready.armed) requestWake();
+    // 앱을 닫았다 열어도 탑승 중 모드는 이어진다
+    if (B.active && B.bell && !ready.armed) requestWake();
 
     renderAll();
     refresh();
