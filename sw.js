@@ -6,7 +6,7 @@
      예전 내용이 남아 있어, 버전만 올리면 새 캐시에 예전 파일이 들어간다.
      쿼리를 바꾸면 캐시 키가 달라져 항상 새로 받는다.
      (화면은 ignoreSearch 로 캐시를 찾으므로 쿼리 유무는 상관없다) */
-const VERSION = '15';
+const VERSION = '16';
 const CACHE = 'subway1-radar-v' + VERSION;
 const FILES = [
   './',
@@ -46,9 +46,19 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
-    ).then(() => self.clients.claim())
+    caches.keys().then((keys) => {
+      const old = keys.filter((k) => k !== CACHE);
+      return Promise.all(old.map((k) => caches.delete(k))).then(() => old.length > 0);
+    }).then((updated) =>
+      self.clients.claim().then(() => {
+        // 예전 버전이 깔려 있던 기기: 열려 있는 화면을 한 번 새로 고쳐
+        // 최신 코드가 바로 뜨게 한다. (처음 설치 때는 새로 고침하지 않음)
+        if (!updated) return;
+        return self.clients.matchAll({ type: 'window' }).then((list) => {
+          list.forEach((c) => { if (c.navigate) c.navigate(c.url).catch(() => {}); });
+        });
+      })
+    )
   );
 });
 
