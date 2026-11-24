@@ -1,11 +1,14 @@
 /* 1호선 알리미 서비스 워커
    - 앱 껍데기(HTML/CSS/JS/아이콘)는 캐시에서 먼저 응답
    - 서울시 API·프록시 요청은 캐시하지 않고 그대로 네트워크로 보냄
-   - 설치할 때는 cache: 'reload' 로 받아 브라우저 HTTP 캐시(깃허브 페이지
-     max-age=600)에 남은 예전 파일이 새 캐시에 들어가지 않게 한다.
-     (버전만 올렸을 때 예전 파일이 그대로 캐시되는 문제 방지) */
-const CACHE = 'subway1-radar-v13';
-const SHELL = [
+   - 설치할 때 껍데기 파일을 버전 쿼리(?v=)로 새 URL 에서 받는다.
+     같은 URL 은 브라우저 HTTP 캐시와 GitHub Pages CDN 캐시(max-age=600)에
+     예전 내용이 남아 있어, 버전만 올리면 새 캐시에 예전 파일이 들어간다.
+     쿼리를 바꾸면 캐시 키가 달라져 항상 새로 받는다.
+     (화면은 ignoreSearch 로 캐시를 찾으므로 쿼리 유무는 상관없다) */
+const VERSION = '14';
+const CACHE = 'subway1-radar-v' + VERSION;
+const FILES = [
   './',
   './index.html',
   './style.css',
@@ -18,6 +21,7 @@ const SHELL = [
   './icons/apple-touch-icon-v2.png',
   './icons/favicon-32-v2.png'
 ];
+const SHELL = FILES.map((f) => f + (f.indexOf('?') < 0 ? '?v=' + VERSION : ''));
 
 /* 새 캐시에는 네트워크에서 새로 받은 파일만 넣는다 */
 function seed(cache, url) {
@@ -71,7 +75,7 @@ self.addEventListener('fetch', (event) => {
           caches.open(CACHE).then((c) => c.put(req, copy));
         }
         return res;
-      }).catch(() => caches.match('./index.html'));
+      }).catch(() => caches.match('./index.html', { ignoreSearch: true }));
     })
   );
 });
