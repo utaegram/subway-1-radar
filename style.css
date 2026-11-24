@@ -952,10 +952,21 @@ main { padding: 8px 12px 0; display: flex; flex-direction: column; gap: 8px; }
   text-overflow: ellipsis;
 }
 
-.tcard-status {
+/* 행 오른쪽: 위 'HH:MM 출발' 배지 + 아래 'HH:MM 도착' 보조 라벨 (세로 정렬) */
+.tcard-times {
   grid-column: 3;
-  grid-row: 1;
+  grid-row: 1 / span 2;
   justify-self: end;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tcard-status {
   font-size: 9.5px;
   font-weight: 800;
   padding: 2px 6px;
@@ -964,13 +975,23 @@ main { padding: 8px 12px 0; display: flex; flex-direction: column; gap: 8px; }
   letter-spacing: -.1px;
 }
 
+.tcard-arr {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: -.1px;
+  white-space: nowrap;
+  color: rgba(196, 218, 240, .74);
+}
+
+.tcard[data-state="miss"] .tcard-arr { color: rgba(186, 204, 222, .5); }
+
 .st-go { background: rgba(76, 239, 162, .13); color: #63F7B0; box-shadow: inset 0 0 0 1px rgba(99, 247, 176, .34); }
 .st-wait { background: rgba(255, 180, 59, .13); color: #FFC24D; box-shadow: inset 0 0 0 1px rgba(255, 194, 77, .3); }
 .st-miss { background: rgba(255, 255, 255, .06); color: #A6B9CC; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12); }
 .st-none { background: rgba(255, 180, 59, .1); color: #E3B162; box-shadow: inset 0 0 0 1px rgba(255, 194, 77, .22); }
 
 .tcard-src {
-  grid-column: 2 / span 2;
+  grid-column: 2;
   grid-row: 2;
   min-width: 0;
   font-size: 10px;

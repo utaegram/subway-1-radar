@@ -1011,11 +1011,20 @@
     el.track.innerHTML = html;
   }
 
-  /* 행 오른쪽 배지: 남은 시간 대신 그 열차가 출발역에 도착하는 시각(HH:MM) */
+  /* 행 오른쪽 두 줄
+     · 위: 그 열차가 출발역을 떠나는 시각 (HH:MM 출발)
+     · 아래: 도착역에 닿는 시각 (HH:MM 도착)
+       도착 시각 = 출발 시각 + 구간 소요시간(stations.js, 급행·ITX는 0.85배) */
   function statusOf(r, now) {
-    if (r.eta == null) return { cls: 'st-none', text: '확인 중' };
+    if (r.eta == null) return { cls: 'st-none', dep: '확인 중', arr: '–' };
     var cls = r.kind === 'go' ? 'st-go' : r.kind === 'wait' ? 'st-wait' : 'st-miss';
-    return { cls: cls, text: clock(now + r.eta * 1000) + ' 도착' };
+    var depAt = now + r.eta * 1000;
+    var ride = stationMinutes(S.s.dep, S.s.arr, r.t.express);
+    return {
+      cls: cls,
+      dep: clock(depAt) + ' 출발',
+      arr: ride == null ? '–' : clock(depAt + ride * 60000) + ' 도착'
+    };
   }
 
   function sourceChip(t) {
@@ -1058,7 +1067,10 @@
         '<div class="tcard-main">' +
         '<div class="tcard-dest"><span class="tdest">' + esc(t.dest || '행선지 미상') + '<span class="to">행</span></span>' + typePill + lastPill + reachPill + '</div>' +
         '</div>' +
-        '<span class="tcard-status ' + st.cls + '">' + st.text + '</span>' +
+        '<div class="tcard-times">' +
+        '<span class="tcard-status ' + st.cls + '">' + st.dep + '</span>' +
+        '<span class="tcard-arr">' + st.arr + '</span>' +
+        '</div>' +
         '<div class="tcard-src"><span class="tcard-loc">' + esc(loc) + '</span>' +
         '<span class="src-chip">' + esc(sourceChip(t)) + '</span>' +
         (t.trainNo ? '<span>#' + esc(t.trainNo) + '</span>' : '') +
