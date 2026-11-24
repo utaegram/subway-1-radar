@@ -121,10 +121,13 @@ async function proxy(key, path, ctx) {
     return json({ ok: false, error: '상류 응답이 JSON이 아닙니다.', raw: text.slice(0, 200) }, 502);
   }
 
-  // 서울시 API는 오류도 200 + errorMessage 로 내려온다
-  const status = body && body.errorMessage ? 502 : 200;
+  // 서울시 API는 성공·실패 가리지 않고 HTTP 200 + JSON 본문으로 내려온다.
+  // errorMessage 는 "오류" 표시가 아니라 응답 봉투(envelope)이고,
+  // 성공(INFO-000)·빈 데이터(INFO-200)일 때도 함께 온다.
+  // → 봉투를 보고 상태 코드를 502로 바꾸면 브라우저 fetch 가 멀쩡한 데이터를
+  //   실패로 버린다(예전 동작). 성공/실패 판단은 본문 코드로 하고 HTTP 는 200.
   const res = new Response(JSON.stringify(body), {
-    status,
+    status: 200,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'public, max-age=15',
@@ -133,7 +136,7 @@ async function proxy(key, path, ctx) {
     },
   });
 
-  if (status === 200 && ctx && ctx.waitUntil) {
+  if (ctx && ctx.waitUntil) {
     ctx.waitUntil(cache.put(cacheKey, res.clone()));
   }
   return res;

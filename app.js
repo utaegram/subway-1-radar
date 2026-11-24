@@ -504,33 +504,59 @@
     return null;
   }
 
-  function fetchJson(url) {
+  /* 서울시 API의 정상/빈 데이터 응답인지 판별.
+     서울시는 정상일 때도 errorMessage.code(INFO-000/INFO-200)를 함께 내려준다.
+     배포된 프록시(Worker)가 이 정상 본문을 HTTP 502로 감싸 보내는 경우가 있어,
+     상태 코드만으로 실패를 판단하지 않는다. */
+  function isUsableSubwayJson(json) {
+    if (!json || typeof json !== 'object') return false;
+    if (Array.isArray(json.realtimeArrivalList) || Array.isArray(json.realtimePositionList)) return true;
+    var code = (json.errorMessage && json.errorMessage.code) || json.code ||
+      (json.RESULT && json.RESULT.CODE) || '';
+    return code === 'INFO-000' || code === 'INFO-200';
+  }
+
+  function fetchJsonOnce(url) {
     var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
     var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, 12000);
     return fetch(url, { cache: 'no-store', signal: ctrl ? ctrl.signal : undefined })
       .then(function (res) {
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        return res.text();
-      })
-      .then(function (text) {
-        var json;
-        try { json = JSON.parse(text); } catch (e) {
-          throw new Error('응답이 JSON이 아니에요 (프록시 주소를 확인해 주세요)');
-        }
-        return json;
+        return res.text().then(function (text) {
+          var json = null;
+          try { json = text ? JSON.parse(text) : null; } catch (e) { json = null; }
+          if (json && (res.ok || isUsableSubwayJson(json))) return json;
+          if (!json) {
+            throw new Error('응답이 JSON이 아니에요 (HTTP ' + res.status + ' · 프록시 주소를 확인해 주세요)');
+          }
+          throw new Error('HTTP ' + res.status);
+        });
       })
       .finally(function () { clearTimeout(timer); });
   }
 
+  function fetchJson(url) {
+    return fetchJsonOnce(url).catch(function (err) {
+      var msg = String((err && err.message) || err);
+      var retriable = /^HTTP 5\d\d$/.test(msg) || msg.indexOf('JSON이 아니에요') >= 0 ||
+        (err && err.name === 'TypeError');
+      if (err && err.name === 'AbortError') retriable = false; // 시간 초과는 재시도해도 같다
+      if (!retriable) throw err;
+      // 5xx 빈 응답·일시적 네트워크 실패는 0.9초 뒤 한 번만 다시 시도
+      return new Promise(function (resolve) { setTimeout(resolve, 900); })
+        .then(function () { return fetchJsonOnce(url); });
+    });
+  }
+
   function readList(json, listKey) {
-    if (json && json[listKey]) return json[listKey];
-    if (json && json.errorMessage) {
-      var em = json.errorMessage;
-      throw new Error('API 오류 ' + (em.code || '') + ' ' + (em.message || em.code || ''));
-    }
-    if (json && json.RESULT && json.RESULT.CODE && json.RESULT.CODE !== 'INFO-000') {
-      throw new Error('API 오류 ' + json.RESULT.CODE + ' ' + (json.RESULT.MESSAGE || ''));
-    }
+    if (json && Array.isArray(json[listKey])) return json[listKey];
+    var em = json && json.errorMessage;
+    var code = (em && em.code) || (json && json.code) ||
+      (json && json.RESULT && json.RESULT.CODE) || '';
+    var msg = (em && (em.message || em.code)) || (json && json.message) ||
+      (json && json.RESULT && json.RESULT.MESSAGE) || '';
+    // INFO-000(정상) · INFO-200(해당 데이터 없음)은 오류가 아니라 빈 목록
+    if (code === 'INFO-000' || code === 'INFO-200') return [];
+    if (code) throw new Error('API 오류 ' + code + ' ' + msg);
     if (json && json.ok === false) throw new Error(json.error || '프록시 오류');
     return [];
   }
