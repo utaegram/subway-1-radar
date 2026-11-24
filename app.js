@@ -1314,6 +1314,17 @@
     try { BELL.audio.pause(); BELL.audio.currentTime = 0; } catch (e) {}
   }
 
+  /* 음원이 준비돼 있으면 바로 울리고, 아니면 디코딩을 기다렸다가 울린다.
+     디코딩까지 실패했을 때만 <audio> 폴백을 쓴다(첫 알람이 작게 들리지 않게). */
+  function playOrDecode(opts, guard) {
+    if (playBell(opts)) return true;
+    decodeBell(ready.ctx).then(function (buf) {
+      if (buf) { if (!guard || guard()) playBell(opts); }
+      else playBellElement(opts);
+    });
+    return false;
+  }
+
   /* 알람 반복 간격 — 음원 길이 + 1초 */
   function bellPeriodMs() {
     var d = BELL.dur;
@@ -1461,21 +1472,17 @@
     if (el.alarmBanner) el.alarmBanner.classList.remove('hidden');
     ringOnce();
     if (ready.timer) clearInterval(ready.timer);
-    ready.timer = setInterval(function () {
-      ready.beats++;
-      ringOnce();
-    }, bellPeriodMs());
+    ready.timer = setInterval(ringOnce, bellPeriodMs());
     requestWake();
     renderReady();
   }
 
   /* 알람 한 번 — 도착 벨 음원 한 판 + 진동.
-     아직 디코딩 전이면 <audio>로 먼저 울리고, 다음 차례부터는 음원을 쓴다. */
+     첫 차례에 아직 디코딩 전이면 디코딩을 기다렸다가 울린다(늦게 끝난 재생은 버린다). */
   function ringOnce() {
+    var beat = ++ready.beats;
     playNow(function () {
-      if (playBell({})) return;
-      decodeBell(ready.ctx);
-      playBellElement({});
+      playOrDecode({}, function () { return ready.ringing && beat === ready.beats; });
     });
     vibrate();
   }
@@ -1520,10 +1527,8 @@
   /* 준비하기 직후 새 벨소리를 앞부분만 페이드아웃하며 들려준다 */
   function playIntro() {
     playNow(function () {
-      if (playBell({ until: INTRO_SEC, gain: 0.95 })) return;
-      decodeBell(ready.ctx).then(function (buf) {
-        if (buf && ready.armed && !ready.ringing) playBell({ until: INTRO_SEC, gain: 0.95 });
-      });
+      playOrDecode({ until: INTRO_SEC, gain: 0.95 },
+        function () { return ready.armed && !ready.ringing; });
     });
   }
 
@@ -1624,14 +1629,7 @@
     if (!ok) { showToast('이 브라우저는 벨소리를 재생할 수 없어요'); return; }
     cutSound();
     prefetchBell();
-    playNow(function () {
-      if (playBell({})) return;
-      // 디코딩이 끝나기 전에는 <audio>로 먼저 들려주고, 그게 안 될 때만 음원으로
-      var played = playBellElement({});
-      decodeBell(ready.ctx).then(function (buf) {
-        if (buf && !played) playBell({});
-      });
-    });
+    playNow(function () { playOrDecode({}); });
     showToast('도착 벨소리 미리듣기');
   }
 
