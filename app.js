@@ -17,6 +17,7 @@
   var API_BASE = 'http://swopenAPI.seoul.go.kr/api/subway';
   var REFRESH_SEC = 30;
   var BOARD_MARGIN = 1; // 분: 승강장 도착 후 최소 여유
+  var LIST_MAX = 4;     // 다가오는 열차 목록에 보여 줄 최대 대수
 
   // 배포된 Cloudflare Worker 프록시(https+CORS 중계). 열자마자 실시간 LIVE로 동작
   var DEFAULT_PROXY = 'https://subway-proxy.chldbxo.workers.dev';
@@ -876,7 +877,7 @@
 
     renderVerdict(v, now);
     renderTrack(rows);
-    renderTrainList(rows, view);
+    renderTrainList(rows, view, now);
     renderStatus(now);
     renderReady();
     maybeAlarm(v);
@@ -1010,11 +1011,11 @@
     el.track.innerHTML = html;
   }
 
-  function statusOf(r) {
+  /* 행 오른쪽 배지: 남은 시간 대신 그 열차가 출발역에 도착하는 시각(HH:MM) */
+  function statusOf(r, now) {
     if (r.eta == null) return { cls: 'st-none', text: '확인 중' };
-    if (r.kind === 'go') return { cls: 'st-go', text: '지금 출발' };
-    if (r.kind === 'wait') return { cls: 'st-wait', text: r.departIn + '분 뒤 출발' };
-    return { cls: 'st-miss', text: '늦음' };
+    var cls = r.kind === 'go' ? 'st-go' : r.kind === 'wait' ? 'st-wait' : 'st-miss';
+    return { cls: cls, text: clock(now + r.eta * 1000) + ' 도착' };
   }
 
   function sourceChip(t) {
@@ -1026,15 +1027,15 @@
     return '정보 없음';
   }
 
-  function renderTrainList(rows, view) {
+  function renderTrainList(rows, view, now) {
     var html = '';
     var shown = 0;
-    var visible = rows.slice(0, 8);
+    var visible = rows.slice(0, LIST_MAX);
     var hasExpress = false;
 
     visible.forEach(function (r) {
       var t = r.t;
-      var st = statusOf(r);
+      var st = statusOf(r, now);
       if (t.express || t.itx) hasExpress = true;
       var typePill = t.itx ? '<span class="pill pill-itx">ITX</span>' :
         t.express ? '<span class="pill pill-exp">급행</span>' :
