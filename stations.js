@@ -291,6 +291,40 @@
     return out;
   }
 
+  /* 실시간 위치 한 대가 출발역 → 도착역 구간을 탈 수 있는지 판정한다.
+
+     판정은 열차가 실제로 달릴 경로로 한다. 1호선 역 그래프는 나무 모양
+     (경인선·경부선·경원선 본선 + 서동탄지선)이라 두 역 사이 경로가 하나뿐이다.
+     즉 "현재역 → 종착역" 경로를 따라가다 출발역을 지나고, 그 다음에
+     도착역이 나오면 그 열차는 반드시 출발역과 도착역을 차례로 지난다.
+     - 이미 출발역을 지난 열차: 경로에 출발역이 없거나 현재역이 출발역
+     - 반대 방향 열차: 경로에 출발역이 없음
+     - 다른 지선으로 빠지는 열차: 경로에 도착역이 없음
+     all null 로 걸러진다.
+
+     통과하면 { mins: 현재역→출발역 소요(분), stops: 남은 역 수, dir } */
+  function catchableFrom(dep, arr, cur, terminal) {
+    dep = normalize(dep); arr = normalize(arr);
+    var c = normalize(cur), t = normalize(terminal);
+    if (!AXIS.hasOwnProperty(dep) || !AXIS.hasOwnProperty(arr) || dep === arr) return null;
+    if (!AXIS.hasOwnProperty(c) || !AXIS.hasOwnProperty(t)) return null;
+    if (t === dep) return null;
+    var p = pathBetween(c, t);
+    if (!p) return null;
+    var iDep = p.indexOf(dep);
+    if (iDep <= 0) return null;                 // 출발역을 아직 안 지났어야 함
+    var iArr = p.indexOf(arr);
+    if (iArr <= iDep) return null;              // 도착역이 그 다음에 와야 함
+    var mins = 0;
+    for (var i = 0; i < iDep; i++) {
+      var seg = (ADJ[p[i]] || {})[p[i + 1]];
+      if (seg == null) seg = (ADJ[p[i + 1]] || {})[p[i]];
+      if (seg == null) return null;
+      mins += seg;
+    }
+    return { mins: mins, stops: iDep, dir: dirToward(dep, arr) };
+  }
+
   /* 역 선택 목록: 주요 역 우선 + 전체 */
   const MAJOR = [
     '연천', '소요산', '동두천', '광운대', '청량리', '회기', '서울역', '시청',
@@ -342,6 +376,7 @@
     minutesBetween: minutesBetween,
     pathBetween: pathBetween,
     dirToward: dirToward,
+    catchableFrom: catchableFrom,
     reaches: reaches,
     stopsBetween: stopsBetween,
     routeAhead: routeAhead,

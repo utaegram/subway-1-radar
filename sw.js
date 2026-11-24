@@ -1,7 +1,7 @@
 /* 1호선 알리미 서비스 워커
    - 앱 껍데기(HTML/CSS/JS/아이콘)는 캐시에서 먼저 응답
    - 서울시 API·프록시 요청은 캐시하지 않고 그대로 네트워크로 보냄 */
-const CACHE = 'subway1-radar-v11';
+const CACHE = 'subway1-radar-v12';
 const SHELL = [
   './',
   './index.html',

@@ -37,7 +37,7 @@
     s: loadSettings(),
     tab: 'down',
     data: { up: [], down: [] },
-    meta: { mode: 'demo', fetchedAt: 0, error: '', lastTrainsAt: 0 },
+    meta: { mode: 'demo', fetchedAt: 0, error: '', lastTrainsAt: 0, positions: 0, added: 0 },
     countdown: REFRESH_SEC,
     loading: false,
     ticker: null
@@ -379,6 +379,105 @@
     return true;
   }
 
+  /* ── 위치 정보로 보정·보충───────────────────────── */
+
+  /* API 역명을 1호선 데이터의 역명으로 ('서울' → '서울역', '천안아산' → '아산') */
+  function apiStation(name) {
+    var n = D.normalize(name);
+    if (D.isStation(n)) return n;
+    var alias = D.aliasOf(name);
+    return alias || n;
+  }
+
+  /* 도착정보로 받은 열차들에 같은 열차번호의 위치를 붙인다.
+     도착예정시간(초)처럼 정확한 값이 오는 구간은 예측치로 덮어쓰지 않고
+     위치 설명만 채운다. */
+  function applyPositions(trains, positions, dep, arr) {
+    if (!positions || !positions.length) return;
+    var byNo = {};
+    positions.forEach(function (p) {
+      var k = String(p.trainNo || '');
+      if (k && !byNo[k]) byNo[k] = p;
+    });
+    trains.forEach(function (t) {
+      var p = byNo[String(t.trainNo)];
+      if (!p) return;
+      if (t.source === 'barvlDt' || t.source === 'state') {
+        var st = apiStation(p.statnNm);
+        if (st && D.isStation(st) && !t.atStation) t.atStation = st;
+        return;
+      }
+      applyPosition(t, p, dep, arr);
+    });
+  }
+
+  /* 원거리 열차 보충.
+     출발역 도착정보는 최대 4대뿐이라, 앞쪽이 천안행처럼 도착역 전에 끝나는
+     열차로만 차 있으면 아산까지 가는 열차(신창행)가 화면에서 사라져
+     고장난 것처럼 보인다. 그래서 전 노선 열차 위치(realtimePosition)에서
+     지금 이 출발역으로 들어오면서 도착역까지 가는 열차를 찾아 넣는다.
+     · 도착정보에 이미 있는 열차(열차번호)는 건너뛴다.
+     · 이미 출발역을 지난 열차, 반대 방향 열차, 다른 지선으로 빠지는 열차는
+       stations.js 의 경로 판정(catchableFrom)이 걸러낸다. */
+  function supplementTrains(trains, dep, arr, positions) {
+    if (!positions || !positions.length) return 0;
+    var known = {};
+    trains.forEach(function (t) { if (t.trainNo) known[String(t.trainNo)] = true; });
+    var found = [];
+    positions.forEach(function (p) {
+      var no = String(p.trainNo || '');
+      if (!no || known[no]) return;
+      if (p.subwayId && String(p.subwayId) !== '1001') return;
+      var cur = apiStation(p.statnNm);
+      var term = apiStation(p.statnTnm);
+      var path = D.catchableFrom(dep, arr, cur, term);
+      if (!path) return;
+      known[no] = true;
+      found.push({ p: p, path: path, cur: cur, term: term });
+    });
+    found.forEach(function (x) {
+      trains.push(positionTrain(x, dep, arr));
+    });
+    return found.length;
+  }
+
+  /* 위치 정보만으로 만든 열차 객체 — routeTrain 결과와 같은 형식 */
+  function positionTrain(x, dep, arr) {
+    var p = x.p;
+    var sttus = String(p.trainSttus == null ? '' : p.trainSttus);
+    var express = String(p.directAt) === '1';
+    var mins = x.path.mins;
+    if (sttus === '0') mins += 0.35;                    // 현재역 진입 중
+    else if (sttus === '1') mins -= 0.1;                // 현재역 도착
+    else if (sttus === '2' || sttus === '3') mins -= 0.45; // 출발·전역 출발
+    else mins += 0.15;
+    if (express) mins = mins * 0.85;
+    var recptn = parseRecptn(p.recptnDt);
+    var age = isFinite(recptn) ? Math.max(0, (Date.now() - recptn) / 1000) : 0;
+    mins = Math.max(0, mins - Math.min(age, 90) / 60);
+
+    var stateLabel = sttus === '0' ? '진입' : sttus === '1' ? '도착' : '전역';
+    return {
+      raw: p,
+      dir: D.dirToward(dep, arr) || routeDir(),
+      express: express,
+      itx: false,
+      lastTrain: String(p.lstcarAt) === '1',
+      etaSec: Math.max(0, mins * 60),
+      source: 'position',
+      atStation: x.cur,
+      away: x.path.stops || null,
+      stateLabel: stateLabel,
+      msg2: '',
+      msg3: '',
+      dest: x.term,
+      trainNo: String(p.trainNo || ''),
+      reaches: true,
+      approx: true,   // 출발역 도착정보가 아니라 전 노선 위치로 잡은 열차
+      baseAt: Date.now()
+    };
+  }
+
   /* ── 데모 시뮬레이션 ───────────────────────────────── */
   var DEMO_OFFSETS = [3.2, 7.9, 13.4, 19.2, 25.1, 31.0];
 
@@ -563,7 +662,7 @@
 
   function fetchArrivals(stationName) {
     var url = apiUrl('realtimeStationArrival', [0, 30, encodeURIComponent(stationName)]);
-    if (!url) throw new Error('데이터 소스가 설정되지 않았어요');
+    if (!url) return Promise.reject(new Error('데이터 소스가 설정되지 않았어요'));
     return fetchJson(url).then(function (json) {
       var list = readList(json, 'realtimeArrivalList');
       return list.filter(function (r) { return String(r.subwayId) === '1001'; });
@@ -594,7 +693,7 @@
 
     if (mode === 'demo' || (mode === 'key' && !S.s.key) || (mode === 'proxy' && !S.s.proxy)) {
       S.data = bucket(buildDemo(dep, arr).map(function (r) { return routeTrain(r, dep, arr); }));
-      S.meta = { mode: 'demo', fetchedAt: Date.now(), error: '', lastTrainsAt: Date.now() };
+      S.meta = { mode: 'demo', fetchedAt: Date.now(), error: '', lastTrainsAt: Date.now(), positions: 0, added: 0 };
       S.loading = false;
       renderAll();
       return;
@@ -609,28 +708,20 @@
       return;
     }
 
-    fetchArrivals(dep).then(function (list) {
+    // 도착정보(출발역 기준)와 전 노선 열차 위치를 함께 받아 온다.
+    // 위치 정보는 ① 도착정보 열차의 위치·도착시각 보정 ② 도착정보에 없는
+    // 원거리 목적지행 열차 보충 에 함께 쓰인다.
+    Promise.all([fetchArrivals(dep), fetchPositions()]).then(function (res) {
+      var list = res[0] || [];
+      var positions = res[1] || [];
       var trains = list.map(function (raw) { return routeTrain(raw, dep, arr); });
-      var needPos = trains.some(function (t) {
-        return t.etaSec == null || t.source === 'msg' || !t.dest;
-      });
-
-      var afterPos = needPos
-        ? fetchPositions().then(function (positions) {
-          if (!positions.length) return;
-          var byNo = {};
-          positions.forEach(function (p) { byNo[String(p.trainNo)] = p; });
-          trains.forEach(function (t) {
-            var p = byNo[String(t.trainNo)];
-            if (p) applyPosition(t, p, dep, arr);
-          });
-        })
-        : Promise.resolve();
-
-      return afterPos.then(function () {
-        S.data = bucket(trains);
-        S.meta = { mode: 'live', fetchedAt: Date.now(), error: '', lastTrainsAt: Date.now() };
-      });
+      applyPositions(trains, positions, dep, arr);
+      var added = supplementTrains(trains, dep, arr, positions);
+      S.data = bucket(trains);
+      S.meta = {
+        mode: 'live', fetchedAt: Date.now(), error: '', lastTrainsAt: Date.now(),
+        positions: positions.length, added: added
+      };
     }).catch(function (err) {
       var msg = String(err && err.message || err);
       if (/Failed to fetch|NetworkError|Load failed|aborted|abort/i.test(msg)) {
@@ -694,17 +785,28 @@
   function verdictFor(rows, walk, view) {
     rows = rows.filter(function (r) { return r.eta != null; });
     if (!rows.length) {
+      if (!S.meta.fetchedAt) {
+        return {
+          kind: 'none',
+          title: '불러오는 중…',
+          sub: '출발역 도착정보와 전 노선 열차 위치를 확인하고 있어요.'
+        };
+      }
       if (view && view.excluded) {
         return {
           kind: 'none',
           title: S.s.arr + '까지 가는 열차가 없어요',
-          sub: '지금 오는 ' + view.excluded + '대는 ' + S.s.arr + ' 전에 종착해요 · 잠시 뒤 다시 확인해 주세요.'
+          sub: '지금 오는 ' + view.excluded + '대는 ' + S.s.arr + ' 전에 종착해요' +
+            (S.meta.positions ? ' · 1호선 전체 열차 위치에도 없어요' : '') +
+            ' · 잠시 뒤 다시 확인해 주세요.'
         };
       }
       return {
         kind: 'none',
-        title: '열차 정보가 없어요',
-        sub: '잠시 뒤 새로고침하거나 설정에서 데이터 소스를 확인해 주세요.'
+        title: S.s.arr + '까지 가는 열차가 없어요',
+        sub: S.meta.positions
+          ? '1호선 전체 열차 위치까지 확인했어요 · 잠시 뒤 다시 확인해 주세요.'
+          : '잠시 뒤 새로고침하거나 설정에서 데이터 소스를 확인해 주세요.'
       };
     }
     var best = null;
@@ -886,8 +988,8 @@
       var outside = windowMin < 0.5 || r.eta / 60 > windowMin;
       var x = outside ? 5.5 : xOf(-Math.min(r.eta / 60, windowMin));
       var lane = -1;
-      // 화면 밖 열차는 노선 위가 아니라 위쪽 여백에만 놓는다
-      var order = outside ? [0] : [0, 1];
+      // 화면 밖 먼 열차는 노선 위가 아니라 왼쪽 여백에 위아래로 쌓아 보여 준다
+      var order = [0, 1];
       for (var k = 0; k < order.length; k++) {
         var i = order[k];
         var busy = placed.some(function (p) { return p.lane === i && Math.abs(p.x - x) < 9; });
@@ -916,6 +1018,7 @@
   }
 
   function sourceChip(t) {
+    if (t.approx) return '전 노선 위치';
     if (t.source === 'barvlDt') return '도착예정 ' + Math.round(t.etaSec) + '초';
     if (t.source === 'state') return '역 ' + (t.stateLabel || '도착');
     if (t.source === 'msg') return '메시지로 추정';
@@ -942,7 +1045,7 @@
       var loc = '';
       if (t.atStation) {
         var stTxt = t.stateLabel === '전역' || !t.stateLabel ? '출발' : t.stateLabel;
-        loc = t.atStation + '역 ' + stTxt + (t.away ? ' · ' + t.away + '개 역 전' : '');
+        loc = stationLabel(t.atStation) + ' ' + stTxt + (t.away ? ' · ' + t.away + '개 역 전' : '');
       }
       else if (t.stateLabel) loc = '출발역 ' + t.stateLabel;
       else loc = t.msg2 ? t.msg2 : '위치 확인 중';
@@ -970,10 +1073,17 @@
       ? routeLabel() + ' ' + total + '대' + (total > visible.length ? ' · 가까운 ' + visible.length + '대' : '')
       : '';
 
-    if (view.excluded) {
-      var dests = view.excludedDests.slice(0, 3).join('·');
-      el.filterNote.innerHTML = '도착역까지 못 가는 열차 <b>' + view.excluded + '대</b> 제외됨' +
-        (dests ? ' (' + esc(dests) + '행)' : '');
+    if (view.excluded || S.meta.added) {
+      var notes = [];
+      if (view.excluded) {
+        var dests = view.excludedDests.slice(0, 3).join('·');
+        notes.push('도착역까지 못 가는 열차 <b>' + view.excluded + '대</b> 제외됨' +
+          (dests ? ' (' + esc(dests) + '행)' : ''));
+      }
+      if (S.meta.added) {
+        notes.push('전 노선 위치에서 <b>' + S.meta.added + '대</b>를 더 찾았어요');
+      }
+      el.filterNote.innerHTML = notes.join(' · ');
       el.filterNote.classList.remove('hidden');
     } else {
       el.filterNote.classList.add('hidden');
@@ -989,9 +1099,16 @@
 
     if (!shown) {
       el.trainEmpty.classList.remove('hidden');
-      el.trainEmpty.innerHTML = S.meta.error
-        ? '실시간 정보를 불러오지 못했어요.<br><small>' + esc(S.meta.error) + '</small>'
-        : '지금은 ' + esc(S.s.arr) + '까지 가는 열차가 안 보여요.<br><small>운행 시간대가 아니거나 데이터가 비어 있어요.</small>';
+      if (!S.meta.fetchedAt) {
+        el.trainEmpty.innerHTML = '열차 정보를 불러오는 중…';
+      } else if (S.meta.error) {
+        el.trainEmpty.innerHTML = '실시간 정보를 불러오지 못했어요.<br><small>' + esc(S.meta.error) + '</small>';
+      } else if (S.meta.positions) {
+        el.trainEmpty.innerHTML = '지금은 ' + esc(S.s.arr) + '까지 가는 열차가 없어요.<br><small>' +
+          '1호선 전체 열차 위치까지 확인했어요 · 운행 시간대가 아니거나 곧 들어올 수 있어요.</small>';
+      } else {
+        el.trainEmpty.innerHTML = '지금은 ' + esc(S.s.arr) + '까지 가는 열차가 안 보여요.<br><small>운행 시간대가 아니거나 데이터가 비어 있어요.</small>';
+      }
     } else {
       el.trainEmpty.classList.add('hidden');
     }
@@ -1341,7 +1458,7 @@
       badge + '</button>' +
       '<button class="st-star' + (fav ? ' is-on' : '') + '" type="button" data-fav="' + esc(s.name) + '"' +
       ' aria-pressed="' + (fav ? 'true' : 'false') + '"' +
-      ' aria-label="' + esc(s.name) + '역 즐겨찾기 ' + (fav ? '해제' : '추가') + '"' +
+      ' aria-label="' + esc(stationLabel(s.name)) + ' 즐겨찾기 ' + (fav ? '해제' : '추가') + '"' +
       ' title="' + (fav ? '즐겨찾기 해제' : '즐겨찾기') + '">' + (fav ? '★' : '☆') + '</button>' +
       '</div>';
   }
