@@ -1,7 +1,10 @@
 /* 1호선 알리미 서비스 워커
    - 앱 껍데기(HTML/CSS/JS/아이콘)는 캐시에서 먼저 응답
-   - 서울시 API·프록시 요청은 캐시하지 않고 그대로 네트워크로 보냄 */
-const CACHE = 'subway1-radar-v12';
+   - 서울시 API·프록시 요청은 캐시하지 않고 그대로 네트워크로 보냄
+   - 설치할 때는 cache: 'reload' 로 받아 브라우저 HTTP 캐시(깃허브 페이지
+     max-age=600)에 남은 예전 파일이 새 캐시에 들어가지 않게 한다.
+     (버전만 올렸을 때 예전 파일이 그대로 캐시되는 문제 방지) */
+const CACHE = 'subway1-radar-v13';
 const SHELL = [
   './',
   './index.html',
@@ -16,10 +19,22 @@ const SHELL = [
   './icons/favicon-32-v2.png'
 ];
 
+/* 새 캐시에는 네트워크에서 새로 받은 파일만 넣는다 */
+function seed(cache, url) {
+  return fetch(url, { cache: 'reload' })
+    .then((res) => {
+      if (!res || !res.ok) throw new Error('HTTP ' + (res && res.status));
+      return cache.put(url, res);
+    })
+    .catch(() => fetch(url, { cache: 'no-store' })
+      .then((res) => { if (res && res.ok) return cache.put(url, res); })
+      .catch(() => {}));
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE)
-      .then((cache) => cache.addAll(SHELL))
+      .then((cache) => Promise.all(SHELL.map((url) => seed(cache, url))))
       .then(() => self.skipWaiting())
       .catch(() => self.skipWaiting())
   );

@@ -1686,6 +1686,14 @@
     S.ticker = setInterval(tick, 1000);
 
     if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+      // 새 버전 서비스 워커가 활성화되면 한 번 새로 고쳐 바로 최신 화면으로 바꾼다
+      var hadController = !!navigator.serviceWorker.controller;
+      var reloading = false;
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        if (!hadController || reloading) return;
+        reloading = true;
+        location.reload();
+      });
       window.addEventListener('load', function () {
         navigator.serviceWorker.register('sw.js').catch(function () {});
       });
