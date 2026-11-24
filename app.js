@@ -1128,64 +1128,250 @@
     }
   }
 
-  /* ── 준비하기 · 출발 벨소리 ────────────────────────── */
+  /* ── 준비하기 · 출발 알람 소리 ────────────────────────
+     승강장에 열차가 들어올 때 울리는 밝은 브라스 팡파르(도·미·솔 화음)를
+     Web Audio로 직접 합성한다. 음원 파일을 받아 오지 않으므로 지하철
+     지하처럼 네트워크가 약한 곳에서도 바로 울린다.
+
+     소리 경로
+       음(브라스 + 차임) → 재생 게인 → 컴프레서 → 마스터 → 소프트 클립 → 스피커
+     · 컴프레서: 음이 겹쳐도 찢어지지 않게 눌러 주고
+     · 마스터: 컴프레서 뒤에서 한 번 더 키워 폰 스피커에서도 크게
+     · 소프트 클립(tanh): 0 dB를 넘어도 둥글게 눌러 찌그러짐(클리핑)을 막는다
+     ─────────────────────────────────────────────────── */
+  var SOUND = {
+    ctx: null,
+    input: null,   // 재생 게인들이 모이는 입력
+    comp: null,
+    master: null,
+    clip: null,
+    live: []       // 지금 울리는 재생 게인들(알람 끄기에서 바로 끊는다)
+  };
+
+  var ALARM = {
+    master: 2.2,      // 컴프레서 뒤 최종 증폭 — 체감 음량(실측 RMS 약 -7.7 dB)
+    peak: 0.96,       // 소프트 클립이 넘지 않는 최대치
+    threshold: -13,   // 컴프레서 문턱(dB)
+    ratio: 6,         // 문턱을 넘은 만큼 눌러 주는 비율
+    knee: 10,
+    attack: 0.004,
+    release: 0.22,
+    note: 0.46,       // 음 하나의 기준 음량
+    drive: 1.15       // 소프트 클립 곡선의 세기
+  };
+
+  /* 승강장 도착 팡파르 — 솔-도-미-솔로 올라가 두 번 울리고 마지막 음을 길게 끈다.
+     t: 시작(초) · d: 길이(초) · v: 세기 · bell: 차임 겹치기 · chord: 화음 */
+  var PITCH = {
+    G4: 392.00, C5: 523.25, E5: 659.25, G5: 783.99, C6: 1046.50, E6: 1318.51
+  };
+
+  var MELODY = [
+    /* 1구절 — 빠밤, 빠바밤~ (도 미 솔 도) */
+    { f: PITCH.G4, t: 0.00, d: 0.11, v: 0.55 },
+    { f: PITCH.C5, t: 0.12, d: 0.11, v: 0.70 },
+    { f: PITCH.E5, t: 0.25, d: 0.12, v: 0.80 },
+    { f: PITCH.G5, t: 0.39, d: 0.30, v: 1.00, bell: 1 },
+    { f: PITCH.E5, t: 0.74, d: 0.10, v: 0.60 },
+    { f: PITCH.G5, t: 0.85, d: 0.10, v: 0.75 },
+    { f: PITCH.C6, t: 0.97, d: 0.55, v: 1.00, bell: 1, chord: [PITCH.E5, PITCH.G5] },
+    /* 2구절 — 같은 리듬을 한 옥타브 위에서 한 번 더 */
+    { f: PITCH.G5, t: 1.62, d: 0.11, v: 0.60 },
+    { f: PITCH.C6, t: 1.74, d: 0.11, v: 0.80 },
+    { f: PITCH.E6, t: 1.87, d: 0.11, v: 0.55 },
+    { f: PITCH.G5, t: 2.01, d: 0.10, v: 0.60 },
+    { f: PITCH.C6, t: 2.13, d: 0.10, v: 0.80 },
+    { f: PITCH.C6, t: 2.26, d: 0.85, v: 1.00, bell: 1, chord: [PITCH.G5, PITCH.E5] }
+  ];
+
+  var INTRO_SEC = 0.72;   // 준비하기를 누를 때 들려줄 앞소절(도-미-솔-도)
+  var RING_EVERY = 3400;  // 알람 반복 간격 — 멜로디 3.1초 + 숨 고르기
+
+  /* tanh 소프트 클립 곡선 — 최대 ±ALARM.peak 안에서 둥글게 눌러 준다 */
+  function softCurve(n, drive) {
+    var curve = new Float32Array(n);
+    var k = Math.tanh(drive);
+    for (var i = 0; i < n; i++) {
+      var x = (i / (n - 1)) * 2 - 1;
+      curve[i] = ALARM.peak * Math.tanh(x * drive) / k;
+    }
+    return curve;
+  }
+
+  function buildSound() {
+    var ctx = ready.ctx;
+    if (!ctx) return null;
+    if (SOUND.input && SOUND.ctx === ctx) return SOUND;
+
+    var input = ctx.createGain();
+    input.gain.value = 1;
+
+    var comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = ALARM.threshold;
+    comp.knee.value = ALARM.knee;
+    comp.ratio.value = ALARM.ratio;
+    comp.attack.value = ALARM.attack;
+    comp.release.value = ALARM.release;
+
+    var master = ctx.createGain();
+    master.gain.value = ALARM.master;
+
+    var clip = ctx.createWaveShaper();
+    clip.curve = softCurve(1024, ALARM.drive);
+    clip.oversample = '4x';
+
+    input.connect(comp);
+    comp.connect(master);
+    master.connect(clip);
+    clip.connect(ctx.destination);
+
+    SOUND.ctx = ctx;
+    SOUND.input = input;
+    SOUND.comp = comp;
+    SOUND.master = master;
+    SOUND.clip = clip;
+    SOUND.live = [];
+    return SOUND;
+  }
+
   function unlockAudio() {
     try {
       var AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return false;
       if (!ready.ctx) ready.ctx = new AC();
-      if (ready.ctx.state === 'running') return true;
       if (ready.ctx.state === 'suspended') ready.ctx.resume();
-      // 무음 버스트로 자동재생 정책 잠금을 풀어 둔다
-      var t = ready.ctx.currentTime;
-      var o = ready.ctx.createOscillator();
-      var g = ready.ctx.createGain();
-      g.gain.setValueAtTime(0.0001, t);
-      o.connect(g);
-      g.connect(ready.ctx.destination);
-      o.start(t);
-      o.stop(t + 0.03);
-      return true;
+      return !!buildSound();
     } catch (e) { return false; }
   }
 
-  function playBell(freq, at, len, vol) {
+  /* 이번 재생 전용 게인 — '알람 끄기'에서 이 게인만 0으로 내려 바로 끊는다 */
+  function liveGain() {
     var ctx = ready.ctx;
-    if (!ctx) return;
-    var osc = ctx.createOscillator();
-    var gain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(freq, at);
-    gain.gain.setValueAtTime(0.0001, at);
-    gain.gain.exponentialRampToValueAtTime(vol, at + 0.012);
-    gain.gain.exponentialRampToValueAtTime(0.0001, at + len);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(at);
-    osc.stop(at + len + 0.05);
-
-    // 배음으로 맑은 종소리 느낌
-    var o2 = ctx.createOscillator();
-    var g2 = ctx.createGain();
-    o2.type = 'sine';
-    o2.frequency.setValueAtTime(freq * 2.01, at);
-    g2.gain.setValueAtTime(0.0001, at);
-    g2.gain.exponentialRampToValueAtTime(vol * 0.22, at + 0.008);
-    g2.gain.exponentialRampToValueAtTime(0.0001, at + len * 0.7);
-    o2.connect(g2);
-    g2.connect(ctx.destination);
-    o2.start(at);
-    o2.stop(at + len);
+    var g = ctx.createGain();
+    g.gain.value = 1;
+    g.connect(SOUND.input);
+    SOUND.live.push(g);
+    setTimeout(function () {
+      var i = SOUND.live.indexOf(g);
+      if (i >= 0) SOUND.live.splice(i, 1);
+      try { g.disconnect(); } catch (e) {}
+    }, 5200);
+    return g;
   }
 
-  function chimeOnce() {
-    if (!ready.ctx) unlockAudio();
+  /* 브라스 한 음 — 톱니 두 겹 + 한 옥타브 아래 사각파를 저역통과에 물려
+     팡파르 특유의 밝고 두꺼운 소리를 만든다 */
+  function brassVoice(dest, freq, at, dur, amp) {
     var ctx = ready.ctx;
-    if (!ctx) return;
-    if (ctx.state === 'suspended') ctx.resume();
-    var t0 = ctx.currentTime + 0.02;
-    playBell(987.77, t0, 0.60, 0.30);         // B5 딩
-    playBell(783.99, t0 + 0.30, 0.72, 0.30);  // G5 동
+    var out = ctx.createGain();
+    var tone = ctx.createBiquadFilter();
+    tone.type = 'lowpass';
+    tone.Q.value = 1.2;
+    tone.frequency.setValueAtTime(Math.min(11000, freq * 6), at);
+    tone.frequency.exponentialRampToValueAtTime(
+      Math.max(600, freq * 2.2), at + Math.max(0.12, dur * 0.55));
+
+    var a = ctx.createOscillator();
+    a.type = 'sawtooth';
+    a.frequency.setValueAtTime(freq * 0.982, at);   // 살짝 올려 부는 어택
+    a.frequency.exponentialRampToValueAtTime(freq, at + 0.03);
+    a.detune.setValueAtTime(-5, at);
+
+    var b = ctx.createOscillator();
+    b.type = 'sawtooth';
+    b.frequency.setValueAtTime(freq, at);
+    b.detune.setValueAtTime(7, at);
+
+    var sub = ctx.createOscillator();
+    sub.type = 'square';
+    sub.frequency.setValueAtTime(freq * 0.5, at);
+    var subGain = ctx.createGain();
+    subGain.gain.value = 0.22;
+
+    a.connect(tone);
+    b.connect(tone);
+    sub.connect(subGain);
+    subGain.connect(tone);
+    tone.connect(out);
+    out.connect(dest);
+
+    out.gain.setValueAtTime(0.0001, at);
+    out.gain.exponentialRampToValueAtTime(amp, at + 0.022);
+    out.gain.exponentialRampToValueAtTime(amp * 0.66, at + 0.14);
+    if (dur > 0.26) out.gain.setValueAtTime(amp * 0.66, at + dur - 0.06);
+    out.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+
+    [a, b, sub].forEach(function (o) { o.start(at); o.stop(at + dur + 0.06); });
+  }
+
+  /* 차임 — 사인 배음이 빠르게 사그라드는 종소리. 작은 스피커에서도 또렷하다 */
+  function bellVoice(dest, freq, at, dur, amp) {
+    var ctx = ready.ctx;
+    [[1, 1], [2.01, 0.5], [3.02, 0.24], [4.06, 0.1]].forEach(function (p) {
+      var o = ctx.createOscillator();
+      var g = ctx.createGain();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(freq * p[0], at);
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.exponentialRampToValueAtTime(amp * p[1], at + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + dur * (p[0] === 1 ? 1 : 0.6));
+      o.connect(g);
+      g.connect(dest);
+      o.start(at);
+      o.stop(at + dur + 0.05);
+    });
+  }
+
+  /* 멜로디 한 번. until(초)을 주면 그 시점까지만 잘라 울린다(앞소절 미리듣기) */
+  function playMelody(until, scale) {
+    var ctx = ready.ctx;
+    if (!ctx || !SOUND.input) return false;
+    var s = typeof scale === 'number' ? scale : 1;
+    var dest = liveGain();
+    var t0 = ctx.currentTime + 0.04;
+    MELODY.forEach(function (n) {
+      if (until && n.t >= until) return;
+      var dur = Math.min(n.d, (until || 99) - n.t);
+      if (dur < 0.04) return;
+      var amp = ALARM.note * n.v * s;
+      brassVoice(dest, n.f, t0 + n.t, dur, amp);
+      if (n.chord) {
+        n.chord.forEach(function (f) { brassVoice(dest, f, t0 + n.t, dur, amp * 0.45); });
+      }
+      if (n.bell) bellVoice(dest, n.f * 2, t0 + n.t, Math.max(0.35, dur), ALARM.note * s * 0.30);
+    });
+    return true;
+  }
+
+  /* 오디오 잠금이 풀렸는지 확인하고 소리를 낸다(첫 터치·일시 중단 복귀) */
+  function playNow(fn) {
+    unlockAudio();
+    var ctx = ready.ctx;
+    if (!ctx) return false;
+    if (ctx.state === 'running') { fn(); return true; }
+    var p = ctx.resume();
+    if (p && p.then) p.then(fn, fn);
+    else fn();
+    return true;
+  }
+
+  /* 울리던 소리를 곧바로 멈춘다 — 예약해 둔 음까지 끊는다 */
+  function cutSound() {
+    var ctx = ready.ctx;
+    if (!ctx || !SOUND.live.length) return;
+    var t = ctx.currentTime;
+    var cut = SOUND.live;
+    SOUND.live = [];
+    cut.forEach(function (g) {
+      try {
+        g.gain.cancelScheduledValues(t);
+        g.gain.setValueAtTime(g.gain.value, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.08);
+      } catch (e) {}
+    });
+    setTimeout(function () {
+      cut.forEach(function (g) { try { g.disconnect(); } catch (e) {} });
+    }, 200);
   }
 
   function vibrate() {
@@ -1218,16 +1404,20 @@
     if (!ready.ctx) unlockAudio();
     if (el.alarmSub) el.alarmSub.textContent = (v && v.sub) ? v.sub : (S.s.arr + '까지 갈 열차가 곧 도착해요');
     if (el.alarmBanner) el.alarmBanner.classList.remove('hidden');
-    chimeOnce();
-    vibrate();
+    ringOnce();
     if (ready.timer) clearInterval(ready.timer);
     ready.timer = setInterval(function () {
       ready.beats++;
-      chimeOnce();
-      if (ready.beats % 2 === 1) vibrate();
-    }, 2600);
+      ringOnce();
+    }, RING_EVERY);
     requestWake();
     renderReady();
+  }
+
+  /* 알람 한 번 — 도착 멜로디 + 진동 */
+  function ringOnce() {
+    playNow(function () { playMelody(0, 1); });
+    vibrate();
   }
 
   function stopRing(quiet) {
@@ -1236,6 +1426,7 @@
       ready.ringing = false;
       ready.latched = true;
     }
+    cutSound(); // 멜로디가 길어졌으니 끄는 즉시 예약된 음까지 끊는다
     if (el.alarmBanner) el.alarmBanner.classList.add('hidden');
     if (navigator.vibrate) { try { navigator.vibrate(0); } catch (e) {} }
     renderReady();
@@ -1259,8 +1450,10 @@
     var ok = unlockAudio();
     requestWake();
     renderReady();
-    showToast(ok ? '준비 완료 · 지금 출발!이 되면 벨소리가 울려요' : '이 브라우저는 벨소리를 재생할 수 없어요');
+    showToast(ok ? '준비 완료 · 지금 출발!이 되면 도착 멜로디가 울려요' : '이 브라우저는 벨소리를 재생할 수 없어요');
     renderLive(); // 이미 '지금 출발!'이면 바로 울린다
+    // 아직 울릴 때가 아니라면 바뀐 멜로디·볼륨을 앞소절로 들려 바로 체감하게 한다
+    if (ok && !ready.ringing) playNow(function () { playMelody(INTRO_SEC, 0.95); });
   }
 
   function disarmReady(silent) {
@@ -1345,7 +1538,7 @@
 
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) return;
-      if (ready.armed) requestWake();
+      if (ready.armed) { requestWake(); unlockAudio(); }
       if (S.s.auto && Date.now() - S.meta.fetchedAt > REFRESH_SEC * 1000) refresh();
     });
 
@@ -1358,8 +1551,9 @@
   function previewBell() {
     var ok = unlockAudio();
     if (!ok) { showToast('이 브라우저는 벨소리를 재생할 수 없어요'); return; }
-    chimeOnce();
-    showToast('벨소리 미리듣기');
+    cutSound();
+    playNow(function () { playMelody(0, 1); });
+    showToast('도착 멜로디 미리듣기');
   }
 
   function stepWalk(delta) {
